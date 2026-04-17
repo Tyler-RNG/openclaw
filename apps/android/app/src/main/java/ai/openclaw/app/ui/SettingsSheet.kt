@@ -72,6 +72,7 @@ import ai.openclaw.app.MainViewModel
 import ai.openclaw.app.normalizeLocalHourMinute
 import ai.openclaw.app.NotificationPackageFilterMode
 import ai.openclaw.app.node.DeviceNotificationListenerService
+import ai.openclaw.app.wear.WearRelayLog
 
 @Composable
 fun SettingsSheet(viewModel: MainViewModel) {
@@ -459,6 +460,49 @@ fun SettingsSheet(viewModel: MainViewModel) {
       contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
       verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+      // ── Watch Relay ──
+      item {
+        Text(
+          "WATCH RELAY",
+          style = mobileCaption1.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
+          color = Color(0xFF00FF41),
+        )
+      }
+      item {
+        val entries = WearRelayLog.entries.collectAsState()
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF0A0F0A), RoundedCornerShape(8.dp))
+            .border(1.dp, Color(0xFF00FF41).copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+            .padding(12.dp),
+          verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+          if (entries.value.isEmpty()) {
+            Text(
+              "Waiting for watch...\nService is registered and listening.",
+              style = mobileCaption1.copy(fontFamily = FontFamily.Monospace),
+              color = Color(0xFF00FF41).copy(alpha = 0.5f),
+            )
+          } else {
+            entries.value.takeLast(12).forEach { line ->
+              val color = when {
+                line.startsWith("ERROR") || line.startsWith("FAIL") -> Color.Red
+                line.startsWith(">>") -> Color(0xFF00FF41)
+                line.startsWith("<<") -> Color(0xFF39FF14)
+                else -> Color(0xFFAABBAA)
+              }
+              Text(
+                line,
+                style = mobileCaption1.copy(fontFamily = FontFamily.Monospace, fontSize = 10.sp),
+                color = color,
+              )
+            }
+          }
+        }
+      }
+      item { HorizontalDivider(color = mobileBorder) }
+
       // ── Node ──
       item {
         Text(

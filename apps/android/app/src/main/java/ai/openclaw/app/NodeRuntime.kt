@@ -1090,6 +1090,82 @@ class NodeRuntime(
     return chat.sendMessageAwaitAcceptance(message = message, thinkingLevel = thinking, attachments = attachments)
   }
 
+  // --- Wearable relay helpers (used by WearRelayService) ---
+
+  /** List agents known to the gateway. Returns raw JSON from agents.list RPC. */
+  suspend fun wearRelayAgentsList(): String? {
+    if (!operatorConnected) return null
+    return try {
+      operatorSession.request("agents.list", "{}")
+    } catch (_: Throwable) {
+      null
+    }
+  }
+
+  /**
+   * Send a chat message on behalf of the watch and wait for the final assistant
+   * response text. Returns null on error or timeout.
+   */
+  data class WearChatResult(val text: String?, val error: String?)
+
+  suspend fun wearRelayChatSend(agentId: String, text: String): WearChatResult {
+    Log.d("WearRelay", "chatSend: agentId=$agentId text=${text.take(50)} connected=$operatorConnected")
+    if (!operatorConnected) {
+      return WearChatResult(null, "Operator session not connected")
+    }
+    return try {
+      val deviceId = identityStore.loadOrCreate().deviceId
+      val sessionKey = buildNodeMainSessionKey(deviceId, agentId)
+      Log.d("WearRelay", "chatSend: sessionKey=$sessionKey")
+      val idempotencyKey = UUID.randomUUID().toString()
+      val params =
+        kotlinx.serialization.json.buildJsonObject {
+          put("sessionKey", kotlinx.serialization.json.JsonPrimitive(sessionKey))
+          put("message", kotlinx.serialization.json.JsonPrimitive(text))
+          put("thinking", kotlinx.serialization.json.JsonPrimitive("low"))
+          put("timeoutMs", kotlinx.serialization.json.JsonPrimitive(60_000))
+          put("idempotencyKey", kotlinx.serialization.json.JsonPrimitive(idempotencyKey))
+        }
+      Log.d("WearRelay", "chatSend: calling chat.send...")
+      val res = operatorSession.request("chat.send", params.toString(), timeoutMs = 65_000)
+      Log.d("WearRelay", "chatSend: chat.send response=$res")
+      val runId = parseChatSendRunId(res)
+      if (runId == null) {
+        return WearChatResult(null, "chat.send OK but no runId. Response: ${res.take(200)}")
+      }
+      Log.d("WearRelay", "chatSend: runId=$runId, polling history...")
+      val historyParams =
+        kotlinx.serialization.json.buildJsonObject {
+          put("sessionKey", kotlinx.serialization.json.JsonPrimitive(sessionKey))
+        }
+      repeat(120) { i ->
+        kotlinx.coroutines.delay(500)
+        val history = operatorSession.requestDetailed("chat.history", historyParams.toString())
+        if (history.ok && history.payloadJson != null) {
+          val root = json.parseToJsonElement(history.payloadJson!!).asObjectOrNull()
+          val messages = root?.get("messages") as? kotlinx.serialization.json.JsonArray ?: return@repeat
+          val last = messages.lastOrNull()?.asObjectOrNull() ?: return@repeat
+          val role = last["role"].asStringOrNull()
+          if (role == "assistant") {
+            val content = last["content"] as? kotlinx.serialization.json.JsonArray ?: return@repeat
+            val textContent =
+              content.firstOrNull { c ->
+                c.asObjectOrNull()?.get("type").asStringOrNull() == "text"
+              }?.asObjectOrNull()
+            val result = textContent?.get("text").asStringOrNull()
+            Log.d("WearRelay", "chatSend: got assistant response, ${result?.length} chars")
+            return WearChatResult(result, null)
+          }
+        }
+        if (i % 10 == 0) Log.d("WearRelay", "chatSend: poll #$i, no assistant reply yet")
+      }
+      WearChatResult(null, "Timed out waiting for agent response (60s)")
+    } catch (e: Throwable) {
+      Log.e("WearRelay", "chatSend: exception", e)
+      WearChatResult(null, "${e.javaClass.simpleName}: ${e.message}")
+    }
+  }
+
   private fun handleGatewayEvent(event: String, payloadJson: String?) {
     micCapture.handleGatewayEvent(event, payloadJson)
     talkMode.handleGatewayEvent(event, payloadJson)

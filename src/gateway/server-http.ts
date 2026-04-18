@@ -91,6 +91,8 @@ let sessionHistoryHttpModulePromise:
   | undefined;
 let sessionKillHttpModulePromise: Promise<typeof import("./session-kill-http.js")> | undefined;
 let toolsInvokeHttpModulePromise: Promise<typeof import("./tools-invoke-http.js")> | undefined;
+let assetsHttpModulePromise: Promise<typeof import("./assets-http.js")> | undefined;
+let ttsHttpModulePromise: Promise<typeof import("./tts-http.js")> | undefined;
 
 function getBundledChannelsModule() {
   bundledChannelsModulePromise ??= import("../channels/plugins/bundled.js");
@@ -140,6 +142,16 @@ function getSessionKillHttpModule() {
 function getToolsInvokeHttpModule() {
   toolsInvokeHttpModulePromise ??= import("./tools-invoke-http.js");
   return toolsInvokeHttpModulePromise;
+}
+
+function getAssetsHttpModule() {
+  assetsHttpModulePromise ??= import("./assets-http.js");
+  return assetsHttpModulePromise;
+}
+
+function getTtsHttpModule() {
+  ttsHttpModulePromise ??= import("./tts-http.js");
+  return ttsHttpModulePromise;
 }
 
 type HookDispatchers = {
@@ -263,6 +275,14 @@ function isSessionKillPath(pathname: string): boolean {
 
 function isSessionHistoryPath(pathname: string): boolean {
   return /^\/sessions\/[^/]+\/history$/.test(pathname);
+}
+
+function isAssetsPath(pathname: string): boolean {
+  return pathname === "/assets" || pathname.startsWith("/assets/");
+}
+
+function isStreamTtsPath(pathname: string): boolean {
+  return pathname === "/stream/tts" || pathname === "/tts";
 }
 
 function isA2uiPath(pathname: string): boolean {
@@ -865,6 +885,10 @@ export function createGatewayHttpServer(opts: {
   openAiChatCompletionsConfig?: import("../config/types.gateway.js").GatewayHttpChatCompletionsConfig;
   openResponsesEnabled: boolean;
   openResponsesConfig?: import("../config/types.gateway.js").GatewayHttpResponsesConfig;
+  assetsHttpEnabled?: boolean;
+  assetsHttpConfig?: import("../config/types.gateway.js").GatewayHttpAssetsConfig;
+  streamTtsHttpEnabled?: boolean;
+  streamTtsHttpConfig?: import("../config/types.gateway.js").GatewayHttpStreamTtsConfig;
   strictTransportSecurityHeader?: string;
   handleHooksRequest: HooksRequestHandler;
   handlePluginRequest?: PluginHttpRequestHandler;
@@ -886,6 +910,10 @@ export function createGatewayHttpServer(opts: {
     openAiChatCompletionsConfig,
     openResponsesEnabled,
     openResponsesConfig,
+    assetsHttpEnabled: assetsHttpEnabledOpt,
+    assetsHttpConfig,
+    streamTtsHttpEnabled: streamTtsHttpEnabledOpt,
+    streamTtsHttpConfig,
     strictTransportSecurityHeader,
     handleHooksRequest,
     handlePluginRequest,
@@ -896,6 +924,10 @@ export function createGatewayHttpServer(opts: {
   } = opts;
   const getResolvedAuth = opts.getResolvedAuth ?? (() => resolvedAuth);
   const openAiCompatEnabled = openAiChatCompletionsEnabled || openResponsesEnabled;
+  const assetsHttpEnabled =
+    assetsHttpEnabledOpt ?? assetsHttpConfig?.enabled === true;
+  const streamTtsHttpEnabled =
+    streamTtsHttpEnabledOpt ?? streamTtsHttpConfig?.enabled === true;
   const httpServer: HttpServer = opts.tlsOptions
     ? createHttpsServer(opts.tlsOptions, (req, res) => {
         void handleRequest(req, res);
@@ -991,6 +1023,32 @@ export function createGatewayHttpServer(opts: {
           run: async () =>
             (await getSessionHistoryHttpModule()).handleSessionHistoryHttpRequest(req, res, {
               auth: resolvedAuth,
+              trustedProxies,
+              allowRealIpFallback,
+              rateLimiter,
+            }),
+        });
+      }
+      if (assetsHttpEnabled && isAssetsPath(requestPath)) {
+        requestStages.push({
+          name: "assets",
+          run: async () =>
+            (await getAssetsHttpModule()).handleAssetsHttpRequest(req, res, {
+              auth: resolvedAuth,
+              config: { ...(assetsHttpConfig ?? {}), enabled: true },
+              trustedProxies,
+              allowRealIpFallback,
+              rateLimiter,
+            }),
+        });
+      }
+      if (streamTtsHttpEnabled && isStreamTtsPath(requestPath)) {
+        requestStages.push({
+          name: "stream-tts",
+          run: async () =>
+            (await getTtsHttpModule()).handleStreamTtsHttpRequest(req, res, {
+              auth: resolvedAuth,
+              config: { ...(streamTtsHttpConfig ?? {}), enabled: true },
               trustedProxies,
               allowRealIpFallback,
               rateLimiter,

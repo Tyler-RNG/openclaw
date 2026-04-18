@@ -1,9 +1,27 @@
+export type GatewayAgentAvatarStateEntry = {
+  file: string;
+  description?: string;
+};
+
+export type GatewayAgentAvatarStates = {
+  default: string;
+  states: Record<string, GatewayAgentAvatarStateEntry>;
+  instruction: string;
+};
+
 export type GatewayAgentIdentity = {
   name?: string;
   theme?: string;
   emoji?: string;
   avatar?: string;
   avatarUrl?: string;
+  /**
+   * Multi-state avatar descriptor. Present only when the agent's identity is
+   * configured with `avatar.kind: "states"`. Clients that render multi-state
+   * avatars should read this and inject `instruction` as a system message on
+   * new sessions; other clients can safely ignore it.
+   */
+  avatarStates?: GatewayAgentAvatarStates;
 };
 
 export type GatewayAgentModel = {

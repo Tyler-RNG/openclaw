@@ -1,7 +1,7 @@
 import { normalizeOptionalString } from "./string-coerce.js";
 
 export function coerceIdentityValue(
-  value: string | undefined,
+  value: unknown,
   maxLength: number,
 ): string | undefined {
   const trimmed = normalizeOptionalString(value);

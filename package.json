@@ -1453,6 +1453,7 @@
     "@grammyjs/types": "^3.26.0",
     "@lit-labs/signals": "^0.2.0",
     "@lit/context": "^1.1.6",
+    "@rolldown/binding-win32-x64-msvc": "1.0.0-rc.16",
     "@types/express": "^5.0.6",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "25.6.0",

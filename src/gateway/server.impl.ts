@@ -178,6 +178,16 @@ export type GatewayServerOptions = {
    */
   openResponsesEnabled?: boolean;
   /**
+   * If true, serve `GET /assets/<path>` for binary asset delivery.
+   * Default: config `gateway.http.endpoints.assets.enabled` (or false when absent).
+   */
+  assetsHttpEnabled?: boolean;
+  /**
+   * If true, serve `GET /stream/tts` (and `/tts`) as a streaming TTS proxy.
+   * Default: config `gateway.http.endpoints.streamTts.enabled` (or false when absent).
+   */
+  streamTtsHttpEnabled?: boolean;
+  /**
    * Override gateway auth configuration (merges with config).
    */
   auth?: import("../config/config.js").GatewayAuthConfig;
@@ -330,6 +340,8 @@ export async function startGatewayServer(
     controlUiEnabled: opts.controlUiEnabled,
     openAiChatCompletionsEnabled: opts.openAiChatCompletionsEnabled,
     openResponsesEnabled: opts.openResponsesEnabled,
+    assetsHttpEnabled: opts.assetsHttpEnabled,
+    streamTtsHttpEnabled: opts.streamTtsHttpEnabled,
     auth: opts.auth,
     tailscale: opts.tailscale,
   });
@@ -340,6 +352,10 @@ export async function startGatewayServer(
     openAiChatCompletionsConfig,
     openResponsesEnabled,
     openResponsesConfig,
+    assetsHttpEnabled,
+    assetsHttpConfig,
+    streamTtsHttpEnabled,
+    streamTtsHttpConfig,
     strictTransportSecurityHeader,
     controlUiBasePath,
     controlUiRoot: controlUiRootOverride,
@@ -453,6 +469,10 @@ export async function startGatewayServer(
     openAiChatCompletionsConfig,
     openResponsesEnabled,
     openResponsesConfig,
+    assetsHttpEnabled,
+    assetsHttpConfig,
+    streamTtsHttpEnabled,
+    streamTtsHttpConfig,
     strictTransportSecurityHeader,
     resolvedAuth,
     rateLimiter: authRateLimiter,

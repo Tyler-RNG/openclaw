@@ -6,6 +6,10 @@ import {
   resolveAgentWorkspaceDir,
   resolveDefaultAgentId,
 } from "../agents/agent-scope.js";
+import {
+  buildAvatarStateInstruction,
+  isAgentAvatarStatesConfig,
+} from "../agents/identity-avatar-states.js";
 import { lookupContextTokens, resolveContextTokensForModel } from "../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
@@ -666,17 +670,30 @@ export function listAgentsForGateway(cfg: OpenClawConfig): {
     if (!entry?.id) {
       continue;
     }
+    const avatarRaw = entry.identity?.avatar;
+    const avatarStatesCfg = isAgentAvatarStatesConfig(avatarRaw) ? avatarRaw : null;
+    const avatarStringValue =
+      typeof avatarRaw === "string" ? normalizeOptionalString(avatarRaw) : undefined;
     const identity = entry.identity
       ? {
           name: normalizeOptionalString(entry.identity.name),
           theme: normalizeOptionalString(entry.identity.theme),
           emoji: normalizeOptionalString(entry.identity.emoji),
-          avatar: normalizeOptionalString(entry.identity.avatar),
+          avatar: avatarStringValue,
           avatarUrl: resolveIdentityAvatarUrl(
             cfg,
             normalizeAgentId(entry.id),
-            normalizeOptionalString(entry.identity.avatar),
+            avatarStringValue,
           ),
+          ...(avatarStatesCfg
+            ? {
+                avatarStates: {
+                  default: avatarStatesCfg.default,
+                  states: avatarStatesCfg.states,
+                  instruction: buildAvatarStateInstruction(avatarStatesCfg),
+                },
+              }
+            : {}),
         }
       : undefined;
     configuredById.set(normalizeAgentId(entry.id), {

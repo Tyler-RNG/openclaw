@@ -1378,6 +1378,7 @@
                       "gateway/protocol",
                       "gateway/bridge-protocol",
                       "gateway/data-plane",
+                      "gateway/avatar-states",
                       "gateway/openai-http-api",
                       "gateway/openresponses-http-api",
                       "gateway/tools-invoke-http-api",

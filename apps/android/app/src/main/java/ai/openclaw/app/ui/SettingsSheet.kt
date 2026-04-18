@@ -73,6 +73,24 @@ import ai.openclaw.app.normalizeLocalHourMinute
 import ai.openclaw.app.NotificationPackageFilterMode
 import ai.openclaw.app.node.DeviceNotificationListenerService
 import ai.openclaw.app.wear.WearRelayLog
+import ai.openclaw.app.wear.WearRelayLogKind
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.widget.Toast
+import androidx.compose.foundation.clickable
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
 
 @Composable
 fun SettingsSheet(viewModel: MainViewModel) {
@@ -461,46 +479,7 @@ fun SettingsSheet(viewModel: MainViewModel) {
       verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
       // ── Watch Relay ──
-      item {
-        Text(
-          "WATCH RELAY",
-          style = mobileCaption1.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
-          color = Color(0xFF00FF41),
-        )
-      }
-      item {
-        val entries = WearRelayLog.entries.collectAsState()
-        Column(
-          modifier = Modifier
-            .fillMaxWidth()
-            .background(Color(0xFF0A0F0A), RoundedCornerShape(8.dp))
-            .border(1.dp, Color(0xFF00FF41).copy(alpha = 0.3f), RoundedCornerShape(8.dp))
-            .padding(12.dp),
-          verticalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-          if (entries.value.isEmpty()) {
-            Text(
-              "Waiting for watch...\nService is registered and listening.",
-              style = mobileCaption1.copy(fontFamily = FontFamily.Monospace),
-              color = Color(0xFF00FF41).copy(alpha = 0.5f),
-            )
-          } else {
-            entries.value.takeLast(12).forEach { line ->
-              val color = when {
-                line.startsWith("ERROR") || line.startsWith("FAIL") -> Color.Red
-                line.startsWith(">>") -> Color(0xFF00FF41)
-                line.startsWith("<<") -> Color(0xFF39FF14)
-                else -> Color(0xFFAABBAA)
-              }
-              Text(
-                line,
-                style = mobileCaption1.copy(fontFamily = FontFamily.Monospace, fontSize = 10.sp),
-                color = color,
-              )
-            }
-          }
-        }
-      }
+      item { WatchRelayPanel() }
       item { HorizontalDivider(color = mobileBorder) }
 
       // ── Node ──
@@ -1392,4 +1371,147 @@ private fun isAssistantRoleAvailable(context: Context): Boolean {
 
 private fun isAssistantRoleHeld(context: Context): Boolean {
   return context.getSystemService(RoleManager::class.java).isRoleHeld(RoleManager.ROLE_ASSISTANT)
+}
+
+/**
+ * Developer panel that surfaces live phone↔watch relay activity. Hidden by
+ * default — enabled via the row-level switch and persisted in local prefs.
+ * Intended for diagnosing watch-companion issues in the field; normal users
+ * never see it.
+ */
+@Composable
+private fun WatchRelayPanel() {
+  val context = LocalContext.current
+  val prefs = remember {
+    context.getSharedPreferences(WATCH_RELAY_PREFS, Context.MODE_PRIVATE)
+  }
+  var showPanel by remember {
+    mutableStateOf(prefs.getBoolean(WATCH_RELAY_PREFS_KEY, false))
+  }
+  val entries by WearRelayLog.entries.collectAsState()
+  val inFlight by WearRelayLog.inFlight.collectAsState()
+  val isActive = inFlight > 0
+  val pulse by rememberInfiniteTransition(label = "relay-pulse").animateFloat(
+    initialValue = 0.35f,
+    targetValue = 1f,
+    animationSpec = infiniteRepeatable(
+      animation = tween(700),
+      repeatMode = RepeatMode.Reverse,
+    ),
+    label = "relay-pulse-alpha",
+  )
+
+  val dotColor = if (isActive) mobileSuccess else mobileTextTertiary
+  val dotAlpha = if (isActive) pulse else 1f
+
+  Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      Box(
+        modifier = Modifier
+          .size(8.dp)
+          .clip(CircleShape)
+          .background(dotColor.copy(alpha = dotAlpha).copy(alpha = if (showPanel) dotAlpha else 0.25f)),
+      )
+      Text(
+        "WATCH RELAY",
+        style = mobileCaption1.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
+        color = if (showPanel) mobileTextSecondary else mobileTextTertiary,
+        modifier = Modifier.weight(1f),
+      )
+      Switch(
+        checked = showPanel,
+        onCheckedChange = {
+          showPanel = it
+          prefs.edit().putBoolean(WATCH_RELAY_PREFS_KEY, it).apply()
+        },
+      )
+    }
+
+    if (!showPanel) return@Column
+
+    if (entries.isNotEmpty()) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+      ) {
+        TextButton(onClick = {
+          val text = entries.joinToString("\n") { it.asCopyableLine() }
+          copyAndToast(context, text, "Copied ${entries.size} log lines")
+        }) {
+          Text("COPY ALL", style = mobileCaption1.copy(fontWeight = FontWeight.Bold), color = mobileAccent)
+        }
+        TextButton(onClick = { WearRelayLog.clear() }) {
+          Text("Clear", style = mobileCaption1, color = mobileTextTertiary)
+        }
+      }
+    }
+
+    val scrollState = rememberScrollState()
+    val relayBg = mobileCodeBg
+    val relayBorder = mobileCodeBorder
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .heightIn(min = 72.dp, max = 240.dp)
+        .background(relayBg, RoundedCornerShape(10.dp))
+        .border(1.dp, relayBorder, RoundedCornerShape(10.dp))
+        .padding(horizontal = 12.dp, vertical = 10.dp)
+        .verticalScroll(scrollState),
+      verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+      if (entries.isEmpty()) {
+        Text(
+          if (isActive) "Working…" else "Waiting for watch…",
+          style = mobileCaption1.copy(fontFamily = FontFamily.Monospace),
+          color = mobileTextTertiary,
+        )
+      } else {
+        entries.forEach { entry ->
+          val color = when (entry.kind) {
+            WearRelayLogKind.Error -> mobileDanger
+            WearRelayLogKind.Warn -> mobileWarning
+            WearRelayLogKind.In -> mobileCodeAccent
+            WearRelayLogKind.Out -> mobileAccent
+            WearRelayLogKind.Info -> mobileCodeText
+          }
+          val arrow = when (entry.kind) {
+            WearRelayLogKind.In -> "←"
+            WearRelayLogKind.Out -> "→"
+            WearRelayLogKind.Error -> "!"
+            WearRelayLogKind.Warn -> "·"
+            WearRelayLogKind.Info -> "·"
+          }
+          val lineText = "${entry.timestamp} $arrow ${entry.tag.padEnd(6).take(6)} ${entry.message}"
+          Text(
+            text = lineText,
+            style = mobileCaption2.copy(fontFamily = FontFamily.Monospace),
+            color = color,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+              .fillMaxWidth()
+              .clickable { copyAndToast(context, entry.asCopyableLine(), "Copied 1 log line") },
+          )
+        }
+      }
+    }
+  }
+}
+
+private const val WATCH_RELAY_PREFS = "openclaw_ui"
+private const val WATCH_RELAY_PREFS_KEY = "show_watch_relay"
+
+private fun ai.openclaw.app.wear.WearRelayLogEntry.asCopyableLine(): String {
+  val kindTag = kind.name.padEnd(5)
+  return "[$timestamp] $kindTag ${tag.padEnd(6)} $message"
+}
+
+private fun copyAndToast(context: android.content.Context, text: String, confirm: String) {
+  val clipboard = context.getSystemService(ClipboardManager::class.java)
+  clipboard?.setPrimaryClip(ClipData.newPlainText("OpenClaw watch relay", text))
+  Toast.makeText(context, confirm, Toast.LENGTH_SHORT).show()
 }

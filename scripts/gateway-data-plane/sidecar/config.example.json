@@ -1,0 +1,32 @@
+{
+  "port": 8443,
+  "bind": "0.0.0.0",
+  "http": {
+    "enabled": true,
+    "assetsDir": "./assets",
+    "publicBaseUrl": "https://<your-machine>.<your-tailnet>.ts.net",
+    "publicAssets": false,
+    "maxAssetSizeBytes": 10485760,
+    "corsOrigins": [],
+    "streamTts": {
+      "provider": "elevenlabs",
+      "providerApiKeyRef": {
+        "kind": "env",
+        "name": "ELEVENLABS_API_KEY"
+      }
+    }
+  },
+  "tls": {
+    "enabled": false,
+    "certPath": "",
+    "keyPath": ""
+  },
+  "auth": {
+    "token": "<gateway-shared-auth-token>"
+  },
+  "gateway": {
+    "host": "127.0.0.1",
+    "port": 18789,
+    "token": "<gateway-shared-auth-token>"
+  }
+}

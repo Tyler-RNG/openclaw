@@ -24,9 +24,12 @@ import ai.openclaw.app.protocol.OpenClawCanvasA2UIAction
 import ai.openclaw.app.voice.MicCaptureManager
 import ai.openclaw.app.voice.TalkModeManager
 import ai.openclaw.app.voice.VoiceConversationEntry
+import ai.openclaw.app.wear.WearRelayLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +37,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -237,6 +241,20 @@ class NodeRuntime(
 
   private val _seamColorArgb = MutableStateFlow(DEFAULT_SEAM_COLOR_ARGB)
   val seamColorArgb: StateFlow<Long> = _seamColorArgb.asStateFlow()
+
+  data class WearDataPlane(
+    val baseUrl: String,
+    val publicAssets: Boolean,
+    val streamTts: Boolean,
+  )
+
+  private val _wearDataPlane = MutableStateFlow<WearDataPlane?>(null)
+
+  /** Current data-plane config from `config.get`, or null if the gateway hasn't published one. */
+  fun wearRelayDataPlane(): WearDataPlane? = _wearDataPlane.value
+
+  /** Current operator auth token, used to sign asset / stream URLs. */
+  fun wearRelayAuthToken(): String? = activeGatewayAuth?.token?.takeIf { it.isNotEmpty() }
 
   private val _isForeground = MutableStateFlow(true)
   val isForeground: StateFlow<Boolean> = _isForeground.asStateFlow()
@@ -1106,64 +1124,388 @@ class NodeRuntime(
    * Send a chat message on behalf of the watch and wait for the final assistant
    * response text. Returns null on error or timeout.
    */
-  data class WearChatResult(val text: String?, val error: String?)
+  data class WearChatPart(
+    val text: String,
+    val isFinal: Boolean,
+    val audioUrl: String? = null,
+    val audioBase64: String? = null,
+    val audioAssetRef: String? = null,
+    val audioMime: String? = null,
+  )
 
-  suspend fun wearRelayChatSend(agentId: String, text: String): WearChatResult {
-    Log.d("WearRelay", "chatSend: agentId=$agentId text=${text.take(50)} connected=$operatorConnected")
-    if (!operatorConnected) {
-      return WearChatResult(null, "Operator session not connected")
-    }
-    return try {
-      val deviceId = identityStore.loadOrCreate().deviceId
-      val sessionKey = buildNodeMainSessionKey(deviceId, agentId)
-      Log.d("WearRelay", "chatSend: sessionKey=$sessionKey")
-      val idempotencyKey = UUID.randomUUID().toString()
-      val params =
-        kotlinx.serialization.json.buildJsonObject {
+  /**
+   * Directive prepended to every message the watch sends. Keeps replies compact
+   * and speakable — the watch has no real screen for long prose and we're going
+   * to TTS it anyway.
+   */
+  private val WEAR_BREVITY_PREFIX =
+    "[Watch mode — reply in 1-2 short sentences, plain spoken language, no preamble, no lists.]\n\n"
+
+  /**
+   * Sends a watch-originated chat message, then streams every assistant text
+   * block back via [onPart]. Completed intermediate blocks arrive first (text
+   * only), and the last stable block is emitted as final with TTS audio.
+   *
+   * Returns null on success, or an error message. The function suspends until
+   * the final part has been delivered to [onPart].
+   */
+  suspend fun wearRelayChatStream(
+    agentId: String,
+    userText: String,
+    onPart: suspend (WearChatPart) -> Unit,
+  ): String? {
+    if (!operatorConnected) return "Operator session not connected"
+    return coroutineScope {
+      try {
+        val deviceId = identityStore.loadOrCreate().deviceId
+        val sessionKey = buildNodeMainSessionKey(deviceId, agentId)
+        val historyParams = kotlinx.serialization.json.buildJsonObject {
           put("sessionKey", kotlinx.serialization.json.JsonPrimitive(sessionKey))
-          put("message", kotlinx.serialization.json.JsonPrimitive(text))
+        }
+
+        val baseline = try {
+          historyMessageCount(operatorSession.requestDetailed("chat.history", historyParams.toString()))
+        } catch (e: Throwable) {
+          WearRelayLog.warn("chat", "$agentId baseline failed: ${e.javaClass.simpleName} — assuming 0")
+          0
+        }
+        Log.d(TAG_WEAR, "$agentId baseline=$baseline")
+
+        val params = kotlinx.serialization.json.buildJsonObject {
+          put("sessionKey", kotlinx.serialization.json.JsonPrimitive(sessionKey))
+          put("message", kotlinx.serialization.json.JsonPrimitive(WEAR_BREVITY_PREFIX + userText))
           put("thinking", kotlinx.serialization.json.JsonPrimitive("low"))
           put("timeoutMs", kotlinx.serialization.json.JsonPrimitive(60_000))
-          put("idempotencyKey", kotlinx.serialization.json.JsonPrimitive(idempotencyKey))
+          put("idempotencyKey", kotlinx.serialization.json.JsonPrimitive(UUID.randomUUID().toString()))
         }
-      Log.d("WearRelay", "chatSend: calling chat.send...")
-      val res = operatorSession.request("chat.send", params.toString(), timeoutMs = 65_000)
-      Log.d("WearRelay", "chatSend: chat.send response=$res")
-      val runId = parseChatSendRunId(res)
-      if (runId == null) {
-        return WearChatResult(null, "chat.send OK but no runId. Response: ${res.take(200)}")
-      }
-      Log.d("WearRelay", "chatSend: runId=$runId, polling history...")
-      val historyParams =
-        kotlinx.serialization.json.buildJsonObject {
-          put("sessionKey", kotlinx.serialization.json.JsonPrimitive(sessionKey))
-        }
-      repeat(120) { i ->
-        kotlinx.coroutines.delay(500)
-        val history = operatorSession.requestDetailed("chat.history", historyParams.toString())
-        if (history.ok && history.payloadJson != null) {
-          val root = json.parseToJsonElement(history.payloadJson!!).asObjectOrNull()
-          val messages = root?.get("messages") as? kotlinx.serialization.json.JsonArray ?: return@repeat
-          val last = messages.lastOrNull()?.asObjectOrNull() ?: return@repeat
-          val role = last["role"].asStringOrNull()
-          if (role == "assistant") {
-            val content = last["content"] as? kotlinx.serialization.json.JsonArray ?: return@repeat
-            val textContent =
-              content.firstOrNull { c ->
-                c.asObjectOrNull()?.get("type").asStringOrNull() == "text"
-              }?.asObjectOrNull()
-            val result = textContent?.get("text").asStringOrNull()
-            Log.d("WearRelay", "chatSend: got assistant response, ${result?.length} chars")
-            return WearChatResult(result, null)
+
+        // Fire chat.send in the background. The poll loop is the source of
+        // truth — if chat.send is slow or throws, we keep watching history.
+        val sendJob = async(Dispatchers.IO) {
+          try {
+            val res = operatorSession.request("chat.send", params.toString(), timeoutMs = 90_000)
+            parseChatSendRunId(res)?.let { runId ->
+              Log.d(TAG_WEAR, "runId=${runId.takeLast(6)}")
+            }
+          } catch (e: Throwable) {
+            WearRelayLog.warn("chat", "chat.send: ${e.javaClass.simpleName}: ${e.message?.take(40)}")
           }
         }
-        if (i % 10 == 0) Log.d("WearRelay", "chatSend: poll #$i, no assistant reply yet")
+
+        val emittedInterim = mutableListOf<String>()
+        var lastSignature = emptyList<Pair<String, String>>()
+        var stableCount = 0
+        val maxPolls = 240
+        val pollIntervalMs = 400L
+        val stabilityThreshold = 3
+        var sawAnyBlock = false
+
+        var consecutivePollErrors = 0
+        repeat(maxPolls) {
+          kotlinx.coroutines.delay(pollIntervalMs)
+          val history = try {
+            operatorSession.requestDetailed("chat.history", historyParams.toString())
+          } catch (e: Throwable) {
+            consecutivePollErrors++
+            // One transient error shouldn't kill the turn; log and retry.
+            // If the session is *actually* dead, we'll bail after several.
+            if (consecutivePollErrors >= 5) {
+              WearRelayLog.error("chat", "$agentId abort: 5 poll errors in a row")
+              return@coroutineScope "${e.javaClass.simpleName}: ${e.message}"
+            }
+            WearRelayLog.warn("chat", "$agentId poll: ${e.javaClass.simpleName} (retry)")
+            return@repeat
+          }
+          consecutivePollErrors = 0
+          val signature = buildAssistantContentSignature(history, baseline)
+          if (signature.isEmpty()) return@repeat
+
+          val blocks = signature.filter { it.first == "text" }.map { it.second }
+          if (!sawAnyBlock && blocks.isNotEmpty()) {
+            sawAnyBlock = true
+            Log.d(TAG_WEAR, "first text after ${(it + 1) * pollIntervalMs}ms")
+          }
+
+          // Emit text blocks that a later block has superseded → interim.
+          val finished = if (blocks.size > 1) blocks.dropLast(1) else emptyList()
+          for ((i, block) in finished.withIndex()) {
+            if (i >= emittedInterim.size && block.isNotBlank()) {
+              emittedInterim.add(block)
+              WearRelayLog.info("chat", "interim #$i: ${block.take(40)}")
+              onPart(WearChatPart(block, isFinal = false))
+            }
+          }
+
+          if (signature == lastSignature) {
+            stableCount++
+          } else {
+            // Log newly-added tool work so the relay panel shows why we're
+            // not finalizing yet.
+            val newTails = signature.drop(lastSignature.size)
+            for (b in newTails) {
+              when (b.first) {
+                "tool_use" -> WearRelayLog.info("chat", "tool: ${b.second.ifBlank { "(unnamed)" }}")
+                "tool_result" -> WearRelayLog.info("chat", "tool result")
+                else -> Unit
+              }
+            }
+            stableCount = 0
+            lastSignature = signature
+          }
+
+          // Only finalize when the LAST content block is text. Tool_use /
+          // tool_result as the tail means the agent is still working — even
+          // if nothing has changed for a while, it's waiting on tool output.
+          val lastBlockType = signature.lastOrNull()?.first
+          if (stableCount >= stabilityThreshold && lastBlockType == "text") {
+            sendJob.cancel()
+            val finalText = blocks.lastOrNull()?.takeIf { it.isNotBlank() }
+            if (finalText != null) {
+              WearRelayLog.info("chat", "final: \"${finalText.take(80)}\"")
+              val audio = wearRelayTalkSpeak(finalText, agentId)
+              onPart(WearChatPart(
+                text = finalText,
+                isFinal = true,
+                audioUrl = audio?.audioUrl,
+                audioBase64 = audio?.audioBase64,
+                audioAssetRef = audio?.audioAssetRef,
+                audioMime = audio?.mimeType,
+              ))
+            } else {
+              onPart(WearChatPart("", isFinal = true))
+            }
+            return@coroutineScope null
+          }
+        }
+
+        sendJob.cancel()
+        val fallback = lastSignature.filter { it.first == "text" }.map { it.second }.lastOrNull()
+        if (!fallback.isNullOrBlank()) {
+          WearRelayLog.warn("chat", "poll limit hit, finalizing last seen")
+          val audio = wearRelayTalkSpeak(fallback, agentId)
+          onPart(WearChatPart(
+            text = fallback,
+            isFinal = true,
+            audioUrl = audio?.audioUrl,
+            audioBase64 = audio?.audioBase64,
+            audioAssetRef = audio?.audioAssetRef,
+            audioMime = audio?.mimeType,
+          ))
+          null
+        } else {
+          val reason = if (sawAnyBlock) "no stable reply" else "no response from gateway"
+          "Gateway unresponsive — $reason after ${maxPolls * pollIntervalMs / 1000}s"
+        }
+      } catch (e: Throwable) {
+        "${e.javaClass.simpleName}: ${e.message}"
       }
-      WearChatResult(null, "Timed out waiting for agent response (60s)")
-    } catch (e: Throwable) {
-      Log.e("WearRelay", "chatSend: exception", e)
-      WearChatResult(null, "${e.javaClass.simpleName}: ${e.message}")
     }
+  }
+
+  private fun historyMessageCount(history: GatewaySession.RpcResult): Int {
+    val payload = history.payloadJson?.takeIf { history.ok } ?: return 0
+    val root = json.parseToJsonElement(payload).asObjectOrNull() ?: return 0
+    val messages = root["messages"] as? kotlinx.serialization.json.JsonArray ?: return 0
+    return messages.size
+  }
+
+  /**
+   * Builds an ordered "signature" of the assistant content since [baseline].
+   * Each entry is (type, identifier):
+   *   - ("text", <full text>)   → text blocks, identified by content so
+   *     streaming token-by-token growth shows up as a change.
+   *   - ("tool_use", <name>)    → tool calls.
+   *   - ("tool_result", <id>)   → tool results.
+   *
+   * Used both to detect change (any signature drift resets stability) and to
+   * decide finality (only text-as-tail counts as done; tool_use-as-tail means
+   * the agent is mid-work even when history looks static).
+   */
+  private fun buildAssistantContentSignature(
+    history: GatewaySession.RpcResult,
+    baseline: Int,
+  ): List<Pair<String, String>> {
+    val payload = history.payloadJson?.takeIf { history.ok } ?: return emptyList()
+    val root = json.parseToJsonElement(payload).asObjectOrNull() ?: return emptyList()
+    val messages = root["messages"] as? kotlinx.serialization.json.JsonArray ?: return emptyList()
+    val sig = mutableListOf<Pair<String, String>>()
+    for (i in baseline until messages.size) {
+      val msg = messages[i].asObjectOrNull() ?: continue
+      if (msg["role"].asStringOrNull() != "assistant") continue
+      val content = msg["content"] as? kotlinx.serialization.json.JsonArray ?: continue
+      for (c in content) {
+        val obj = c.asObjectOrNull() ?: continue
+        val type = obj["type"].asStringOrNull() ?: continue
+        val id = when (type) {
+          "text" -> obj["text"].asStringOrNull()?.takeIf { it.isNotBlank() } ?: continue
+          "tool_use" -> obj["name"].asStringOrNull() ?: obj["id"].asStringOrNull() ?: ""
+          "tool_result" -> obj["tool_use_id"].asStringOrNull() ?: ""
+          else -> ""
+        }
+        sig.add(type to id)
+      }
+    }
+    return sig
+  }
+
+  data class TalkSpeakResult(
+    val audioUrl: String? = null,
+    val audioBase64: String? = null,
+    val audioAssetRef: String? = null,
+    val mimeType: String = "audio/mpeg",
+  )
+
+  /**
+   * Produces TTS audio for the watch. Strategy:
+   *  1. If the agent has ElevenLabs voice config + dataPlane.streamTts, fetch
+   *     the sidecar's /stream/tts endpoint directly from the phone (which IS
+   *     on the tailnet; the watch isn't). Faster and uses the right voice.
+   *  2. Otherwise fall back to the `talk.speak` RPC on the gateway.
+   *
+   * Every path is logged so we can see which one actually produced audio.
+   */
+  private suspend fun wearRelayTalkSpeak(text: String, agentId: String): TalkSpeakResult? {
+    val agent = gatewayAgents.firstOrNull { it.id == agentId }
+    val dp = _wearDataPlane.value
+    val token = activeGatewayAuth?.token
+
+    val wantsElevenLabs = agent?.voiceProvider.equals("elevenlabs", ignoreCase = true)
+    val canFetchDirect = wantsElevenLabs &&
+      !agent?.voiceId.isNullOrBlank() &&
+      dp?.streamTts == true &&
+      !token.isNullOrEmpty()
+
+    if (canFetchDirect) {
+      WearRelayLog.info("chat", "sidecar tts: $agentId voice=${agent!!.voiceId!!.take(8)}")
+      val direct = fetchSidecarTts(dp!!.baseUrl, agent.voiceId!!, text, token!!)
+      if (direct != null) return direct
+      WearRelayLog.warn("chat", "sidecar tts failed, falling back to talk.speak")
+    } else {
+      val reason = buildString {
+        if (wantsElevenLabs != true) append("provider=${agent?.voiceProvider ?: "null"} ")
+        if (agent?.voiceId.isNullOrBlank()) append("voiceId=null ")
+        if (dp?.streamTts != true) append("streamTts=${dp?.streamTts} ")
+        if (token.isNullOrEmpty()) append("noToken ")
+      }.trim()
+      WearRelayLog.info("chat", "sidecar tts skipped: $reason")
+    }
+
+    return talkSpeakRpc(text, agentId, agent)
+  }
+
+  private suspend fun talkSpeakRpc(text: String, agentId: String, agent: GatewayAgentSummary?): TalkSpeakResult? {
+    return try {
+      // Keep params minimal — gateway's Zod schema rejects extra fields.
+      // If the gateway needs to pick a voice per-agent, it should do so via
+      // the session context or extend the schema explicitly. The sidecar-
+      // direct path handles ElevenLabs; this is just the default-voice
+      // fallback for agents without voice config.
+      val params = kotlinx.serialization.json.buildJsonObject {
+        put("text", kotlinx.serialization.json.JsonPrimitive(text))
+      }
+      val result = operatorSession.requestDetailed("talk.speak", params.toString(), timeoutMs = 30_000)
+      if (!result.ok || result.payloadJson == null) {
+        WearRelayLog.warn("chat", "talk.speak: ${result.error?.message?.take(40) ?: "no payload"}")
+        return null
+      }
+      val payload = json.parseToJsonElement(result.payloadJson!!).asObjectOrNull() ?: return null
+      val audioUrl = (payload["audioUrl"].asStringOrNull() ?: payload["streamUrl"].asStringOrNull())
+        ?.takeIf { it.isNotBlank() }
+      val audioBase64 = payload["audioBase64"].asStringOrNull()?.takeIf { it.isNotBlank() }
+      val mimeType = payload["mimeType"].asStringOrNull() ?: "audio/mpeg"
+      when {
+        audioUrl != null -> WearRelayLog.info("chat", "talk.speak → url")
+        audioBase64 != null -> WearRelayLog.info("chat", "talk.speak → base64 ${audioBase64.length / 1000}KB")
+        else -> WearRelayLog.warn("chat", "talk.speak → no audio in response")
+      }
+      if (audioUrl == null && audioBase64 == null) null
+      else TalkSpeakResult(audioUrl = audioUrl, audioBase64 = audioBase64, mimeType = mimeType)
+    } catch (e: Throwable) {
+      WearRelayLog.warn("chat", "talk.speak: ${e.javaClass.simpleName}")
+      null
+    }
+  }
+
+  private suspend fun fetchSidecarTts(
+    baseUrl: String,
+    voiceId: String,
+    text: String,
+    token: String,
+  ): TalkSpeakResult? {
+    return kotlinx.coroutines.withContext(Dispatchers.IO) {
+      try {
+        val voiceEnc = java.net.URLEncoder.encode(voiceId, Charsets.UTF_8.name())
+        val textEnc = java.net.URLEncoder.encode(text, Charsets.UTF_8.name())
+        val tokenEnc = java.net.URLEncoder.encode(token, Charsets.UTF_8.name())
+        val urlStr = "${baseUrl.trimEnd('/')}/stream/tts?voice=$voiceEnc&text=$textEnc&token=$tokenEnc"
+        val conn = java.net.URL(urlStr).openConnection() as java.net.HttpURLConnection
+        conn.connectTimeout = 5_000
+        conn.readTimeout = 30_000
+        conn.requestMethod = "GET"
+        val code = conn.responseCode
+        if (code != 200) {
+          WearRelayLog.warn("chat", "sidecar tts HTTP $code")
+          conn.disconnect()
+          return@withContext null
+        }
+        val mime = conn.contentType?.substringBefore(';')?.trim() ?: "audio/mpeg"
+        val bytes = conn.inputStream.use { it.readBytes() }
+        conn.disconnect()
+        if (bytes.isEmpty()) {
+          WearRelayLog.warn("chat", "sidecar tts empty body")
+          return@withContext null
+        }
+        WearRelayLog.info("chat", "sidecar tts ${bytes.size / 1000}KB $mime")
+
+        // Small audio inlines via MessageClient (fast, no sync wait).
+        // Big audio rides DataClient Asset (no 100 KB cap).
+        if (bytes.size < TTS_INLINE_CAP_BYTES) {
+          val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+          TalkSpeakResult(audioBase64 = b64, mimeType = mime)
+        } else {
+          val assetId = "tts-${java.util.UUID.randomUUID().toString().take(12)}"
+          if (putTtsAsset(assetId, bytes, mime)) {
+            TalkSpeakResult(audioAssetRef = "wear-asset:tts:$assetId", mimeType = mime)
+          } else {
+            null
+          }
+        }
+      } catch (e: java.net.UnknownHostException) {
+        WearRelayLog.warn("chat", "sidecar tts DNS fail")
+        null
+      } catch (e: java.net.SocketTimeoutException) {
+        WearRelayLog.warn("chat", "sidecar tts timeout")
+        null
+      } catch (e: Throwable) {
+        WearRelayLog.warn("chat", "sidecar tts: ${e.javaClass.simpleName}")
+        null
+      }
+    }
+  }
+
+  private suspend fun putTtsAsset(assetId: String, bytes: ByteArray, mime: String): Boolean {
+    return try {
+      val asset = com.google.android.gms.wearable.Asset.createFromBytes(bytes)
+      val request = com.google.android.gms.wearable.PutDataMapRequest
+        .create("/openclaw/tts/$assetId").apply {
+          dataMap.putAsset("data", asset)
+          dataMap.putString("mime", mime)
+          dataMap.putLong("ts", System.currentTimeMillis())
+        }.asPutDataRequest().setUrgent()
+      com.google.android.gms.wearable.Wearable.getDataClient(appContext).putDataItem(request).await()
+      Log.d(TAG_WEAR, "tts asset $assetId queued (${bytes.size / 1000}KB)")
+      true
+    } catch (e: Throwable) {
+      WearRelayLog.warn("chat", "tts asset put failed: ${e.javaClass.simpleName}")
+      false
+    }
+  }
+
+  companion object {
+    /** Audio under this size rides inline via the reply MessageClient message. */
+    private const val TTS_INLINE_CAP_BYTES = 60_000
+    /** Logcat tag for watch-relay diagnostic output. Visible via `adb logcat`. */
+    private const val TAG_WEAR = "WearRelay"
   }
 
   private fun handleGatewayEvent(event: String, payloadJson: String?) {
@@ -1193,6 +1535,31 @@ class NodeRuntime(
 
       val parsed = parseHexColorArgb(raw)
       _seamColorArgb.value = parsed ?: DEFAULT_SEAM_COLOR_ARGB
+
+      // Data plane (sidecar) location — used by the wear relay to rewrite
+      // relative avatar paths and to build /stream/tts URLs.
+      val dp = config?.get("dataPlane").asObjectOrNull()
+      val baseUrl = dp?.get("baseUrl").asStringOrNull()?.trim()
+      _wearDataPlane.value = if (dp != null && !baseUrl.isNullOrEmpty()) {
+        fun boolField(name: String): Boolean {
+          val prim = dp[name] as? JsonPrimitive ?: return false
+          return prim.content.toBooleanStrictOrNull() ?: false
+        }
+        val parsed = WearDataPlane(
+          baseUrl = baseUrl.trimEnd('/'),
+          publicAssets = boolField("publicAssets"),
+          streamTts = boolField("streamTts"),
+        )
+        WearRelayLog.info(
+          "config",
+          "dataPlane ${parsed.baseUrl} publicAssets=${parsed.publicAssets} streamTts=${parsed.streamTts}",
+        )
+        parsed
+      } else {
+        WearRelayLog.info("config", "dataPlane not configured")
+        null
+      }
+
       updateHomeCanvasState()
     } catch (_: Throwable) {
       // ignore
@@ -1213,13 +1580,29 @@ class NodeRuntime(
           if (id.isEmpty()) return@mapNotNull null
           val name = obj["name"].asStringOrNull()?.trim()
           val emoji = obj["identity"].asObjectOrNull()?.get("emoji").asStringOrNull()?.trim()
+          val voice = obj["voice"].asObjectOrNull()
+          val voiceProvider = voice?.get("provider").asStringOrNull()?.trim()
+          val voiceId = voice?.get("voiceId").asStringOrNull()?.trim()
           GatewayAgentSummary(
             id = id,
             name = name?.takeIf { it.isNotEmpty() },
             emoji = emoji?.takeIf { it.isNotEmpty() },
+            voiceProvider = voiceProvider?.takeIf { it.isNotEmpty() },
+            voiceId = voiceId?.takeIf { it.isNotEmpty() },
           )
         } ?: emptyList()
 
+      run {
+        val withVoice = agents.count { !it.voiceId.isNullOrBlank() }
+        WearRelayLog.info("agents", "${agents.size} parsed, $withVoice with voice")
+        // Per-agent voice details go to logcat only — useful for debugging,
+        // noisy in the on-device panel.
+        agents.forEach { a ->
+          if (!a.voiceId.isNullOrBlank()) {
+            Log.d(TAG_WEAR, "${a.id} voice=${a.voiceProvider}/${a.voiceId!!.take(8)}")
+          }
+        }
+      }
       gatewayDefaultAgentId = defaultAgentId.ifEmpty { null }
       gatewayAgents = agents
       syncMainSessionKey(resolveAgentIdFromMainSessionKey(mainKey) ?: gatewayDefaultAgentId)
@@ -1444,6 +1827,8 @@ private data class GatewayAgentSummary(
   val id: String,
   val name: String?,
   val emoji: String?,
+  val voiceProvider: String? = null,
+  val voiceId: String? = null,
 )
 
 @Serializable

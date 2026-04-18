@@ -1,7 +1,9 @@
+import { loadConfig } from "../config/config.js";
 import { onAgentEvent } from "../infra/agent-events.js";
 import { onHeartbeatEvent } from "../infra/heartbeat-events.js";
 import { onSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import { onSessionTranscriptUpdate } from "../sessions/transcript-events.js";
+import { createAvatarMarkerBroadcast } from "./avatar-marker-broadcast.js";
 import {
   createAgentEventHandler,
   type ChatRunState,
@@ -33,6 +35,9 @@ export function startGatewayEventSubscriptions(params: {
   sessionMessageSubscribers: SessionMessageSubscriberRegistry;
   chatAbortControllers: Map<string, unknown>;
 }) {
+  const avatarMarkerBroadcast = createAvatarMarkerBroadcast({
+    getConfig: () => loadConfig(),
+  });
   const agentUnsub = params.minimalTestGateway
     ? null
     : onAgentEvent(
@@ -47,6 +52,7 @@ export function startGatewayEventSubscriptions(params: {
           toolEventRecipients: params.toolEventRecipients,
           sessionEventSubscribers: params.sessionEventSubscribers,
           isChatSendRunActive: (runId) => params.chatAbortControllers.has(runId),
+          avatarMarkerBroadcast,
         }),
       );
 

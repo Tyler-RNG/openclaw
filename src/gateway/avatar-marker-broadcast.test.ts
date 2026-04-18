@@ -31,6 +31,29 @@ function makeConfig(): OpenClawConfig {
   } as OpenClawConfig;
 }
 
+function makeConfigWithThinking(): OpenClawConfig {
+  return {
+    agents: {
+      list: [
+        {
+          id: "ginger",
+          identity: {
+            avatar: {
+              kind: "states",
+              default: "neutral",
+              states: {
+                neutral:  { file: "avatars/ginger/neutral.gif",  description: "resting" },
+                thinking: { file: "avatars/ginger/think.gif",    description: "working" },
+                happy:    { file: "avatars/ginger/smile.gif",    description: "warm" },
+              },
+            },
+          },
+        },
+      ],
+    },
+  } as OpenClawConfig;
+}
+
 function makeAssistantEvent(
   runId: string,
   text: string,
@@ -44,6 +67,21 @@ function makeAssistantEvent(
     ts: Date.now(),
     sessionKey,
     data: { text, delta },
+  };
+}
+
+function makeLifecycleEvent(
+  runId: string,
+  phase: "start" | "end",
+  sessionKey: string,
+): AgentEventPayload {
+  return {
+    runId,
+    seq: 1,
+    stream: "lifecycle",
+    ts: Date.now(),
+    sessionKey,
+    data: { phase },
   };
 }
 
@@ -183,5 +221,141 @@ describe("avatar-marker-broadcast: per-run cleanup", () => {
       { sessionKey: "agent:ginger:main" },
     );
     expect(r2.events.map((e) => e.state)).toEqual(["happy"]);
+  });
+});
+
+describe("avatar-marker-broadcast: gateway-driven auto-emit", () => {
+  it("emits thinking on lifecycle.start when the agent has a thinking state", () => {
+    const broadcast = createAvatarMarkerBroadcast({ getConfig: () => makeConfigWithThinking() });
+    const r = broadcast.process(
+      makeLifecycleEvent("r1", "start", "agent:ginger:main"),
+      { sessionKey: "agent:ginger:main" },
+    );
+    expect(r.event).toBeNull();
+    expect(r.events).toHaveLength(1);
+    expect(r.events[0]).toMatchObject({
+      runId: "r1",
+      agentId: "ginger",
+      state: "thinking",
+      file: "avatars/ginger/think.gif",
+    });
+  });
+
+  it("stays silent on lifecycle.start when the agent has no thinking state", () => {
+    const broadcast = createAvatarMarkerBroadcast({ getConfig: () => makeConfig() });
+    const r = broadcast.process(
+      makeLifecycleEvent("r1", "start", "agent:ginger:main"),
+      { sessionKey: "agent:ginger:main" },
+    );
+    expect(r.events).toEqual([]);
+  });
+
+  it("stays silent on lifecycle.start for non-states agents", () => {
+    const broadcast = createAvatarMarkerBroadcast({ getConfig: () => makeConfigWithThinking() });
+    const r = broadcast.process(
+      makeLifecycleEvent("r1", "start", "agent:plain:main"),
+      { sessionKey: "agent:plain:main" },
+    );
+    expect(r.events).toEqual([]);
+  });
+
+  it("emits default state on lifecycle.end after auto-thinking was emitted", () => {
+    const broadcast = createAvatarMarkerBroadcast({ getConfig: () => makeConfigWithThinking() });
+    broadcast.process(makeLifecycleEvent("r1", "start", "agent:ginger:main"), {
+      sessionKey: "agent:ginger:main",
+    });
+    const r = broadcast.process(
+      makeLifecycleEvent("r1", "end", "agent:ginger:main"),
+      { sessionKey: "agent:ginger:main" },
+    );
+    expect(r.events).toHaveLength(1);
+    expect(r.events[0]).toMatchObject({
+      runId: "r1",
+      state: "neutral",
+      file: "avatars/ginger/neutral.gif",
+    });
+  });
+
+  it("does not emit default on lifecycle.end if we never auto-emitted thinking", () => {
+    const broadcast = createAvatarMarkerBroadcast({ getConfig: () => makeConfig() });
+    const r = broadcast.process(
+      makeLifecycleEvent("r1", "end", "agent:ginger:main"),
+      { sessionKey: "agent:ginger:main" },
+    );
+    expect(r.events).toEqual([]);
+  });
+
+  it("does not emit default on end if the last emitted state was already default", () => {
+    const broadcast = createAvatarMarkerBroadcast({ getConfig: () => makeConfigWithThinking() });
+    // Simulate: thinking on start, then model emits [avatar:neutral] during reply,
+    // then lifecycle.end — should not duplicate neutral.
+    broadcast.process(makeLifecycleEvent("r1", "start", "agent:ginger:main"), {
+      sessionKey: "agent:ginger:main",
+    });
+    broadcast.process(
+      makeAssistantEvent(
+        "r1",
+        "[avatar:neutral]\nHello\n",
+        "[avatar:neutral]\nHello\n",
+        "agent:ginger:main",
+      ),
+      { sessionKey: "agent:ginger:main" },
+    );
+    const r = broadcast.process(
+      makeLifecycleEvent("r1", "end", "agent:ginger:main"),
+      { sessionKey: "agent:ginger:main" },
+    );
+    expect(r.events).toEqual([]);
+  });
+
+  it("still emits default on end when the model ended on a non-default tone state", () => {
+    const broadcast = createAvatarMarkerBroadcast({ getConfig: () => makeConfigWithThinking() });
+    broadcast.process(makeLifecycleEvent("r1", "start", "agent:ginger:main"), {
+      sessionKey: "agent:ginger:main",
+    });
+    broadcast.process(
+      makeAssistantEvent(
+        "r1",
+        "[avatar:happy]\nHi!\n",
+        "[avatar:happy]\nHi!\n",
+        "agent:ginger:main",
+      ),
+      { sessionKey: "agent:ginger:main" },
+    );
+    const r = broadcast.process(
+      makeLifecycleEvent("r1", "end", "agent:ginger:main"),
+      { sessionKey: "agent:ginger:main" },
+    );
+    // Last state was happy → end should reset to neutral.
+    expect(r.events).toHaveLength(1);
+    expect(r.events[0]?.state).toBe("neutral");
+  });
+
+  it("only auto-emits thinking once per run even if lifecycle.start fires twice", () => {
+    const broadcast = createAvatarMarkerBroadcast({ getConfig: () => makeConfigWithThinking() });
+    const first = broadcast.process(
+      makeLifecycleEvent("r1", "start", "agent:ginger:main"),
+      { sessionKey: "agent:ginger:main" },
+    );
+    expect(first.events).toHaveLength(1);
+    const second = broadcast.process(
+      makeLifecycleEvent("r1", "start", "agent:ginger:main"),
+      { sessionKey: "agent:ginger:main" },
+    );
+    expect(second.events).toEqual([]);
+  });
+
+  it("ignores non-start/-end lifecycle phases", () => {
+    const broadcast = createAvatarMarkerBroadcast({ getConfig: () => makeConfigWithThinking() });
+    const r = broadcast.process(
+      makeLifecycleEvent("r1", "start" as "start", "agent:ginger:main"),
+      { sessionKey: "agent:ginger:main" },
+    );
+    expect(r.events).toHaveLength(1);
+    const r2 = broadcast.process(
+      { ...makeLifecycleEvent("r1", "end", "agent:ginger:main"), data: { phase: "heartbeat" } },
+      { sessionKey: "agent:ginger:main" },
+    );
+    expect(r2.events).toEqual([]);
   });
 });

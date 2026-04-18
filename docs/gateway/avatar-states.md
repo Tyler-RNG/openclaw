@@ -89,6 +89,21 @@ This is opt-in per agent. If you don't configure it, nothing changes.
 - State names match `[a-zA-Z0-9_-]+`.
 - Markers are emitted as often as the model wants — typical usage is one at the start of a reply plus occasional mid-reply switches when the tone changes.
 
+## Reserved state names (gateway auto-emits)
+
+Two state names have special semantics — if they appear in your `states` map, the gateway emits `avatar.state.change` events for them automatically, without requiring the model to emit a marker.
+
+| Name | When gateway emits | Purpose |
+|---|---|---|
+| `thinking` | On `lifecycle.start` of any run | Gives the watch a visible "working on it" signal even if the model never emits a marker (and useful while the client-side instruction injection is stubbed out). |
+| `<cfg.default>` | On `lifecycle.end` if the run drifted off `default` | Resets the rendered expression to resting after each reply. |
+
+**Semantics:**
+
+- Operator opts in by naming a state `thinking` in `states`. Omit it and the gateway stays silent at run start.
+- Model-emitted markers take precedence over auto-emits during a run. If the model emits `[avatar:happy]` and the run then ends, the gateway emits `<default>` to reset; if the model's last marker was already `<default>`, no duplicate event fires.
+- All other state names (`happy`, `sad`, `angry`, `curious`, custom names, …) are purely model-controlled via marker.
+
 ## What happens if…
 
 - **The agent has no `avatar.kind: "states"` configured?** Nothing changes. The agent uses its single avatar (or none) exactly like before.

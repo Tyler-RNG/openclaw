@@ -182,6 +182,32 @@ class WearRelayService : WearableListenerService() {
               }
             }
           }
+
+          // Sprite-frames avatar (kind: "sprites"): prefetch every frame file,
+          // publish each on DataClient under /openclaw/avatars/<agentId>/frames/
+          // <state>[/phase]/<NN>. Watch's AvatarRuntime subscribes to the
+          // prefix and drives per-state timing locally. See docs/avatars/formats.md.
+          val spritesObj = identity.optJSONObject("avatarSprites")
+          if (spritesObj != null) {
+            val published = prefetchSpriteFrames(app, agentId, spritesObj)
+            if (published > 0) {
+              identity.put("avatarUrl", WearAsset.buildSpritesRef(agentId))
+              WearRelayLog.info("agents", "$agentId sprites: $published frames published")
+            }
+          }
+
+          // Sprite-atlas avatar (kind: "atlas"): fetch manifest JSON + its
+          // sibling atlas image, publish both on DataClient. Watch's
+          // AvatarRuntime reads the manifest and slices frames from the atlas
+          // bitmap on each tick.
+          val atlasObj = identity.optJSONObject("avatarAtlas")
+          if (atlasObj != null) {
+            val ok = prefetchAtlas(app, agentId, atlasObj)
+            if (ok) {
+              identity.put("avatarUrl", WearAsset.buildAtlasRef(agentId))
+              WearRelayLog.info("agents", "$agentId atlas: manifest + image published")
+            }
+          }
         }
         if (legacyPublished > 0 || legacyFailed > 0) {
           WearRelayLog.info(
@@ -309,6 +335,154 @@ class WearRelayService : WearableListenerService() {
       "agents",
       "$agentId states: ${states.keys.joinToString(",")} default=$defaultState$skippedNote",
     )
+  }
+
+  /**
+   * Fetch every frame declared in an `avatarSprites` descriptor and publish
+   * each to a DataClient path the watch's AvatarRuntime can subscribe to.
+   * Returns the number of successfully published frames.
+   *
+   * Wire paths:
+   *   /openclaw/avatars/<agentId>/frames/<state>/<NN>            — single-sequence state
+   *   /openclaw/avatars/<agentId>/frames/<state>/<phase>/<NN>    — phased state
+   */
+  private suspend fun prefetchSpriteFrames(
+    app: NodeApp,
+    agentId: String,
+    spritesObj: JSONObject,
+  ): Int {
+    val basePath = spritesObj.optString("basePath", "").trim().ifEmpty { return 0 }
+    val format = spritesObj.optString("format", "webp").trim().ifEmpty { "webp" }
+    val states = spritesObj.optJSONObject("states") ?: return 0
+
+    var published = 0
+    val stateNames = states.keys()
+    while (stateNames.hasNext()) {
+      val state = stateNames.next()
+      val stateCfg = states.optJSONObject(state) ?: continue
+      // Phased: { intro?, loop, outro? } each with { count, fps, loop, ... }.
+      // Single-sequence: { count, fps, loop, ... } directly on the state.
+      val phased =
+        stateCfg.has("loop") && stateCfg.optJSONObject("loop") != null
+      if (phased) {
+        for (phase in arrayOf("intro", "loop", "outro")) {
+          val phaseCfg = stateCfg.optJSONObject(phase) ?: continue
+          published += publishFrameSequence(
+            app, agentId, basePath, state, phase, phaseCfg, format,
+          )
+        }
+      } else {
+        published += publishFrameSequence(
+          app, agentId, basePath, state, null, stateCfg, format,
+        )
+      }
+    }
+    return published
+  }
+
+  private suspend fun publishFrameSequence(
+    app: NodeApp,
+    agentId: String,
+    basePath: String,
+    state: String,
+    phase: String?,
+    cfg: JSONObject,
+    format: String,
+  ): Int {
+    val count = cfg.optInt("count", 0)
+    if (count <= 0) return 0
+    val digits = if (count >= 100) 3 else 2
+    val phaseSeg = if (phase != null) "/$phase" else ""
+    var published = 0
+    for (i in 0 until count) {
+      val padded = i.toString().padStart(digits, '0')
+      val ref = "$basePath/$state$phaseSeg/$padded.$format"
+      val fetched = fetchStateBytes(app, ref)
+      if (fetched == null) {
+        WearRelayLog.warn(
+          "agents",
+          "$agentId $state${if (phase != null) "/$phase" else ""} frame $padded: fetch failed",
+        )
+        continue
+      }
+      val (bytes, mime) = fetched
+      val dataPath = WearAsset.avatarFramePath(agentId, state, phase, i)
+      if (putDataItemBytes(app, dataPath, bytes, mime)) {
+        published++
+      }
+    }
+    return published
+  }
+
+  /**
+   * Fetch the atlas manifest JSON and its sibling atlas image, publish both
+   * on DataClient. Manifest lives under .../atlas/manifest (mime
+   * application/json); image under .../atlas/image (mime image/webp).
+   */
+  private suspend fun prefetchAtlas(
+    app: NodeApp,
+    agentId: String,
+    atlasObj: JSONObject,
+  ): Boolean {
+    val manifestRef = atlasObj.optString("manifest", "").trim().ifEmpty { return false }
+    val manifestFetched = fetchStateBytes(app, manifestRef) ?: return false
+    val (manifestBytes, _) = manifestFetched
+
+    // Resolve the sibling atlas image path from the manifest's `image` field.
+    val manifestJson = try {
+      JSONObject(String(manifestBytes, Charsets.UTF_8))
+    } catch (e: Throwable) {
+      WearRelayLog.warn("agents", "$agentId atlas: manifest parse failed: ${e.javaClass.simpleName}")
+      return false
+    }
+    val imageName = manifestJson.optString("image", "").trim()
+    if (imageName.isEmpty()) return false
+    val lastSlash = manifestRef.lastIndexOf('/')
+    val imageRef = if (lastSlash >= 0) manifestRef.substring(0, lastSlash + 1) + imageName else imageName
+
+    val imageFetched = fetchStateBytes(app, imageRef) ?: return false
+    val (imageBytes, imageMime) = imageFetched
+
+    val manifestOk = putDataItemBytes(
+      app,
+      WearAsset.atlasManifestPath(agentId),
+      manifestBytes,
+      "application/json",
+    )
+    val imageOk = putDataItemBytes(
+      app,
+      WearAsset.atlasImagePath(agentId),
+      imageBytes,
+      imageMime,
+    )
+    return manifestOk && imageOk
+  }
+
+  /**
+   * Publish arbitrary bytes at an arbitrary DataClient path as a DataMap
+   * containing { data: Asset, mime, ts }. Same schema as putAvatarAsset but
+   * without the hard-coded /openclaw/avatars/<agentId> path so we can stamp
+   * sprite frames and atlas pieces at their own subpaths.
+   */
+  private suspend fun putDataItemBytes(
+    app: NodeApp,
+    path: String,
+    bytes: ByteArray,
+    mime: String,
+  ): Boolean {
+    return try {
+      val asset = Asset.createFromBytes(bytes)
+      val request = PutDataMapRequest.create(path).apply {
+        dataMap.putAsset("data", asset)
+        dataMap.putString("mime", mime)
+        dataMap.putLong("ts", System.currentTimeMillis())
+      }.asPutDataRequest().setUrgent()
+      com.google.android.gms.wearable.Wearable.getDataClient(app).putDataItem(request).await()
+      true
+    } catch (e: Throwable) {
+      WearRelayLog.warn("agents", "put $path: ${e.javaClass.simpleName}")
+      false
+    }
   }
 
   /** Publishes the avatar bytes as a DataClient Asset. Returns true on success. */

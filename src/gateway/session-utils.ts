@@ -9,7 +9,11 @@ import {
 import { lookupContextTokens, resolveContextTokensForModel } from "../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import {
+  buildAvatarAtlasInstruction,
+  buildAvatarSpritesInstruction,
   buildAvatarStateInstruction,
+  isAgentAvatarAtlasConfig,
+  isAgentAvatarSpritesConfig,
   isAgentAvatarStatesConfig,
 } from "../agents/identity-avatar-states.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
@@ -676,6 +680,8 @@ export function listAgentsForGateway(cfg: OpenClawConfig): {
     }
     const avatarRaw = entry.identity?.avatar;
     const avatarStatesCfg = isAgentAvatarStatesConfig(avatarRaw) ? avatarRaw : null;
+    const avatarSpritesCfg = isAgentAvatarSpritesConfig(avatarRaw) ? avatarRaw : null;
+    const avatarAtlasCfg = isAgentAvatarAtlasConfig(avatarRaw) ? avatarRaw : null;
     const avatarStringValue =
       typeof avatarRaw === "string" ? normalizeOptionalString(avatarRaw) : undefined;
     const identity = entry.identity
@@ -691,6 +697,32 @@ export function listAgentsForGateway(cfg: OpenClawConfig): {
                   default: avatarStatesCfg.default,
                   states: avatarStatesCfg.states,
                   instruction: buildAvatarStateInstruction(avatarStatesCfg),
+                },
+              }
+            : {}),
+          ...(avatarSpritesCfg
+            ? {
+                avatarSprites: {
+                  default: avatarSpritesCfg.default,
+                  basePath: avatarSpritesCfg.basePath,
+                  format: avatarSpritesCfg.format ?? "webp",
+                  states: avatarSpritesCfg.states,
+                  ...(avatarSpritesCfg.transitions
+                    ? { transitions: avatarSpritesCfg.transitions }
+                    : {}),
+                  instruction: buildAvatarSpritesInstruction(avatarSpritesCfg),
+                },
+              }
+            : {}),
+          ...(avatarAtlasCfg
+            ? {
+                avatarAtlas: {
+                  default: avatarAtlasCfg.default,
+                  manifest: avatarAtlasCfg.manifest,
+                  ...(avatarAtlasCfg.descriptions
+                    ? { descriptions: avatarAtlasCfg.descriptions }
+                    : {}),
+                  instruction: buildAvatarAtlasInstruction(avatarAtlasCfg),
                 },
               }
             : {}),

@@ -8,7 +8,12 @@
 //   apps/android/app/src/main/java/ai/openclaw/app/protocol/WearAsset.kt
 //   apps/wearable/app/src/main/java/ai/openclaw/wear/protocol/WearAsset.kt
 
+/** Legacy GIF or single-image avatar — bytes published at WEAR_DATA_AVATAR_PATH/<agentId>. */
 export const WEAR_ASSET_AVATAR_PREFIX = "wear-asset:avatar:";
+/** Sprite-frames avatar — frames published under WEAR_DATA_AVATAR_PATH/<agentId>/frames/... */
+export const WEAR_ASSET_SPRITES_PREFIX = "wear-asset:sprites:";
+/** Sprite-atlas avatar — image + manifest published under WEAR_DATA_AVATAR_PATH/<agentId>/atlas/... */
+export const WEAR_ASSET_ATLAS_PREFIX = "wear-asset:atlas:";
 
 /** DataClient path root the phone publishes avatar bytes to. */
 export const WEAR_DATA_AVATAR_PATH = "/openclaw/avatars";
@@ -18,6 +23,14 @@ export const WEAR_DATA_TTS_PATH = "/openclaw/tts";
 
 export function buildWearAssetAvatarRef(agentId: string): string {
   return `${WEAR_ASSET_AVATAR_PREFIX}${agentId}`;
+}
+
+export function buildWearAssetSpritesRef(agentId: string): string {
+  return `${WEAR_ASSET_SPRITES_PREFIX}${agentId}`;
+}
+
+export function buildWearAssetAtlasRef(agentId: string): string {
+  return `${WEAR_ASSET_ATLAS_PREFIX}${agentId}`;
 }
 
 /** Returns the agentId when `raw` is a well-formed wear-asset avatar ref, else null. */

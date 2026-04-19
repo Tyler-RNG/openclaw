@@ -1,10 +1,19 @@
 import type {
+  AgentAvatarAtlasConfig,
+  AgentAvatarSpriteState,
+  AgentAvatarSpritesConfig,
   AgentAvatarStateEntry,
   AgentAvatarStatesConfig,
 } from "../config/types.base.js";
 import { isRecord } from "../utils.js";
 
-export type { AgentAvatarStateEntry, AgentAvatarStatesConfig };
+export type {
+  AgentAvatarAtlasConfig,
+  AgentAvatarSpriteState,
+  AgentAvatarSpritesConfig,
+  AgentAvatarStateEntry,
+  AgentAvatarStatesConfig,
+};
 
 const STATE_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 
@@ -25,9 +34,7 @@ function isAvatarStateEntry(value: unknown): value is AgentAvatarStateEntry {
   return true;
 }
 
-export function isAgentAvatarStatesConfig(
-  value: unknown,
-): value is AgentAvatarStatesConfig {
+export function isAgentAvatarStatesConfig(value: unknown): value is AgentAvatarStatesConfig {
   if (!isRecord(value)) {
     return false;
   }
@@ -40,7 +47,7 @@ export function isAgentAvatarStatesConfig(
   if (!isRecord(value.states)) {
     return false;
   }
-  const entries = Object.entries(value.states as Record<string, unknown>);
+  const entries = Object.entries(value.states);
   if (entries.length === 0) {
     return false;
   }
@@ -52,7 +59,7 @@ export function isAgentAvatarStatesConfig(
       return false;
     }
   }
-  if (!(value.default in (value.states as Record<string, unknown>))) {
+  if (!(value.default in value.states)) {
     return false;
   }
   if (value.instruction !== undefined && typeof value.instruction !== "string") {
@@ -71,24 +78,104 @@ export function buildAvatarStateInstruction(cfg: AgentAvatarStatesConfig): strin
   if (override) {
     return override;
   }
+  return buildInstructionFromNames({
+    defaultState: cfg.default,
+    stateDescriptions: Object.fromEntries(
+      Object.entries(cfg.states).map(([name, entry]) => [name, entry.description?.trim() ?? ""]),
+    ),
+  });
+}
+
+export function isAgentAvatarSpritesConfig(value: unknown): value is AgentAvatarSpritesConfig {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value.kind !== "sprites") {
+    return false;
+  }
+  if (typeof value.default !== "string") {
+    return false;
+  }
+  if (typeof value.basePath !== "string") {
+    return false;
+  }
+  if (!isRecord(value.states)) {
+    return false;
+  }
+  return true;
+}
+
+export function isAgentAvatarAtlasConfig(value: unknown): value is AgentAvatarAtlasConfig {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value.kind !== "atlas") {
+    return false;
+  }
+  if (typeof value.default !== "string") {
+    return false;
+  }
+  if (typeof value.manifest !== "string") {
+    return false;
+  }
+  return true;
+}
+
+export function buildAvatarSpritesInstruction(cfg: AgentAvatarSpritesConfig): string {
+  const override = cfg.instruction?.trim();
+  if (override) {
+    return override;
+  }
+  const descriptions: Record<string, string> = {};
+  for (const [name, entry] of Object.entries(cfg.states)) {
+    if (!isRecord(entry)) {
+      continue;
+    }
+    const desc = typeof entry.description === "string" ? entry.description.trim() : "";
+    descriptions[name] = desc;
+  }
+  return buildInstructionFromNames({
+    defaultState: cfg.default,
+    stateDescriptions: descriptions,
+  });
+}
+
+export function buildAvatarAtlasInstruction(cfg: AgentAvatarAtlasConfig): string {
+  const override = cfg.instruction?.trim();
+  if (override) {
+    return override;
+  }
+  const descriptions: Record<string, string> = {};
+  if (isRecord(cfg.descriptions)) {
+    for (const [name, desc] of Object.entries(cfg.descriptions)) {
+      if (typeof desc === "string") {
+        descriptions[name] = desc.trim();
+      }
+    }
+  }
+  return buildInstructionFromNames({
+    defaultState: cfg.default,
+    stateDescriptions: descriptions,
+  });
+}
+
+function buildInstructionFromNames(params: {
+  defaultState: string;
+  stateDescriptions: Record<string, string>;
+}): string {
   const lines: string[] = [];
   lines.push(
     "You can change your avatar expression during a reply by writing a marker on its own line.",
   );
-  lines.push(
-    "Marker format: `[avatar:<state>]` — the line must contain nothing else.",
-  );
-  lines.push(
-    "The marker is stripped from the visible reply; use it to convey tone as you speak.",
-  );
+  lines.push("Marker format: `[avatar:<state>]` — the line must contain nothing else.");
+  lines.push("The marker is stripped from the visible reply; use it to convey tone as you speak.");
   lines.push("");
   lines.push("Available states:");
-  for (const [name, entry] of Object.entries(cfg.states)) {
-    const desc = entry.description?.trim() ?? "";
+  for (const [name, desc] of Object.entries(params.stateDescriptions)) {
     lines.push(desc ? `- ${name}: ${desc}` : `- ${name}`);
   }
   lines.push("");
-  lines.push(`Default state: ${cfg.default}.`);
+  lines.push(`Default state: ${params.defaultState}.`);
   lines.push(
     "Switch states multiple times per reply when it helps the tone land. Do not mention this marker system in your reply.",
   );

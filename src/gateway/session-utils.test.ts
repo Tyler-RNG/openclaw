@@ -540,6 +540,35 @@ describe("gateway session utils", () => {
     });
   });
 
+  test("listAgentsForGateway surfaces per-agent voice to clients", () => {
+    const cfg = {
+      session: { mainKey: "main" },
+      agents: {
+        list: [
+          { id: "main", default: true },
+          {
+            id: "ginger",
+            voice: {
+              provider: "elevenlabs",
+              voiceId: "FGY2WhTYpPnrIDTdsKH5",
+              label: "Laura",
+            },
+          },
+        ],
+      },
+    } as OpenClawConfig;
+
+    const result = listAgentsForGateway(cfg);
+    const ginger = result.agents.find((agent) => agent.id === "ginger");
+    expect(ginger?.voice).toEqual({
+      provider: "elevenlabs",
+      voiceId: "FGY2WhTYpPnrIDTdsKH5",
+      label: "Laura",
+    });
+    const main = result.agents.find((agent) => agent.id === "main");
+    expect(main?.voice).toBeUndefined();
+  });
+
   test("listAgentsForGateway respects per-agent fallback override (including explicit empty list)", () => {
     const cfg = {
       session: { mainKey: "main" },

@@ -29,12 +29,20 @@ export type GatewayAgentModel = {
   fallbacks?: string[];
 };
 
+export type GatewayAgentVoice = {
+  provider?: string;
+  voiceId?: string;
+  label?: string;
+  [key: string]: unknown;
+};
+
 export type GatewayAgentRow = {
   id: string;
   name?: string;
   identity?: GatewayAgentIdentity;
   workspace?: string;
   model?: GatewayAgentModel;
+  voice?: GatewayAgentVoice;
 };
 
 export type SessionsListResultBase<TDefaults, TRow> = {

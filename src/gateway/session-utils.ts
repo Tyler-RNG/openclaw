@@ -6,12 +6,12 @@ import {
   resolveAgentWorkspaceDir,
   resolveDefaultAgentId,
 } from "../agents/agent-scope.js";
+import { lookupContextTokens, resolveContextTokensForModel } from "../agents/context.js";
+import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import {
   buildAvatarStateInstruction,
   isAgentAvatarStatesConfig,
 } from "../agents/identity-avatar-states.js";
-import { lookupContextTokens, resolveContextTokensForModel } from "../agents/context.js";
-import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import {
   inferUniqueProviderFromConfiguredModels,
@@ -664,7 +664,11 @@ export function listAgentsForGateway(cfg: OpenClawConfig): {
   const scope = cfg.session?.scope ?? "per-sender";
   const configuredById = new Map<
     string,
-    { name?: string; identity?: GatewayAgentRow["identity"] }
+    {
+      name?: string;
+      identity?: GatewayAgentRow["identity"];
+      voice?: GatewayAgentRow["voice"];
+    }
   >();
   for (const entry of cfg.agents?.list ?? []) {
     if (!entry?.id) {
@@ -680,11 +684,7 @@ export function listAgentsForGateway(cfg: OpenClawConfig): {
           theme: normalizeOptionalString(entry.identity.theme),
           emoji: normalizeOptionalString(entry.identity.emoji),
           avatar: avatarStringValue,
-          avatarUrl: resolveIdentityAvatarUrl(
-            cfg,
-            normalizeAgentId(entry.id),
-            avatarStringValue,
-          ),
+          avatarUrl: resolveIdentityAvatarUrl(cfg, normalizeAgentId(entry.id), avatarStringValue),
           ...(avatarStatesCfg
             ? {
                 avatarStates: {
@@ -699,6 +699,7 @@ export function listAgentsForGateway(cfg: OpenClawConfig): {
     configuredById.set(normalizeAgentId(entry.id), {
       name: normalizeOptionalString(entry.name),
       identity,
+      voice: entry.voice,
     });
   }
   const explicitIds = new Set(
@@ -722,6 +723,7 @@ export function listAgentsForGateway(cfg: OpenClawConfig): {
       identity: meta?.identity,
       workspace: resolveAgentWorkspaceDir(cfg, id),
       ...(model ? { model } : {}),
+      ...(meta?.voice ? { voice: meta.voice } : {}),
     };
   });
   return { defaultId, mainKey, scope, agents };

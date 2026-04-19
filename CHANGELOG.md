@@ -55,6 +55,7 @@ Docs: https://docs.openclaw.ai
 - Memory/dreaming: strip AI-facing inbound metadata envelopes from session-corpus user turns before normalization so REM topic extraction sees the user's actual message text, including array-shaped split envelopes. (#66548) Thanks @zqchris.
 - Agents/errors: detect standalone Cloudflare/CDN HTML challenge pages before transport DNS classification so provider block pages no longer appear as local DNS lookup failures. (#67704) Thanks @chris-yyau.
 - Gateway/assets: move the optional asset-serving endpoint from `/assets/*` to `/openclaw-assets/*` so enabling `gateway.http.endpoints.assets` no longer 401s the dashboard's own Vite bundles at `/assets/index-*.js`. Clients that fetch avatar gifs (Android/Wear relay) and the exported `dataPlane` capability comment are updated to the new prefix; dashboard static bundles continue to serve from `/assets/*` unchanged.
+- Gateway/agents.list: surface per-agent `voice` (provider, voiceId, label, plus any plugin-specific extras) in the agents response so phone/watch clients can route TTS through the configured provider. Prior builds accepted `voice` in `openclaw.json` but dropped it from the outgoing agent row, leaving the Android relay reporting `0 with voice` and TTS disabled for every agent.
 
 ## 2026.4.15-beta.1
 

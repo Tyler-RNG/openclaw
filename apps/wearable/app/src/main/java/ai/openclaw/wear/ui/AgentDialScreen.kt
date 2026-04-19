@@ -1,12 +1,9 @@
 package ai.openclaw.wear.ui
 
 import android.graphics.Color as AndroidColor
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -14,22 +11,26 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,7 +43,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.wear.compose.material.Text
@@ -60,6 +60,8 @@ import androidx.compose.foundation.focusable
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.rotary.onRotaryScrollEvent
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlinx.coroutines.launch
 
 /** Parse a hex color string like "#FF5733" into a Compose Color, or null. */
@@ -164,21 +166,11 @@ fun AgentDialScreen(viewModel: WearViewModel) {
         viewModel.consumeMailJump()
     }
 
-    val infiniteTransition = rememberInfiniteTransition()
-    val pulseScale by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 1.1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(600, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-    )
-
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
     HorizontalPager(
         state = pagerState,
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
             .focusRequester(focusRequester)
             .onRotaryScrollEvent { event ->
                 coroutineScope.launch {
@@ -208,11 +200,23 @@ fun AgentDialScreen(viewModel: WearViewModel) {
             voiceState == VoiceState.Thinking ||
             voiceState == VoiceState.Sending
 
+        // Press-to-grow scale. No pulse; only the current page responds, and
+        // only while the user actively holds the avatar.
+        var isPressed by remember(pageIndex) { mutableStateOf(false) }
+        val pressScale by animateFloatAsState(
+            targetValue = if (isPressed) 1.15f else 1f,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMedium,
+            ),
+            label = "avatar-press-scale",
+        )
+
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center,
         ) {
-            // Outer glow ring using agent theme color
+            // Outer glow ring using agent theme color.
             val ringColor = when {
                 isCurrentPage && voiceState == VoiceState.Error -> Color.Red
                 isCurrentPage && isActive -> agentColor
@@ -221,7 +225,7 @@ fun AgentDialScreen(viewModel: WearViewModel) {
             }
             Box(
                 modifier = Modifier
-                    .size(170.dp)
+                    .size(160.dp)
                     .border(
                         width = 2.dp,
                         brush = Brush.radialGradient(
@@ -231,139 +235,118 @@ fun AgentDialScreen(viewModel: WearViewModel) {
                     ),
             )
 
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-                modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
-            ) {
-                // Agent icon: GIF/image or placeholder — tap to activate
-                val iconBorderColor = when {
-                    isCurrentPage && voiceState == VoiceState.Listening -> agentColor
-                    isCurrentPage && voiceState == VoiceState.Thinking -> Color(0xFFFFAA00)
-                    isCurrentPage && voiceState == VoiceState.Error -> Color.Red
-                    else -> agentColor.copy(alpha = 0.6f)
-                }
+            // Big centered GIF/image — the main visual. Tap-and-hold activates
+            // PTT and grows the avatar.
+            val iconBorderColor = when {
+                isCurrentPage && voiceState == VoiceState.Listening -> agentColor
+                isCurrentPage && voiceState == VoiceState.Thinking -> Color(0xFFFFAA00)
+                isCurrentPage && voiceState == VoiceState.Error -> Color.Red
+                else -> agentColor.copy(alpha = 0.6f)
+            }
 
-                Box(
-                    modifier = Modifier
-                        .size(80.dp)
-                        .then(if (isCurrentPage && isActive) Modifier.scale(pulseScale) else Modifier)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(agentColor.copy(alpha = 0.1f))
-                        .border(2.dp, iconBorderColor, RoundedCornerShape(16.dp))
-                        .pointerInput(isCurrentPage) {
-                            if (isCurrentPage) {
-                                detectTapGestures(
-                                    onPress = {
-                                        viewModel.startPushToTalk(pageIndex)
+            Box(
+                modifier = Modifier
+                    .size(143.dp)
+                    .scale(pressScale)
+                    .clip(RoundedCornerShape(34.dp))
+                    .background(agentColor.copy(alpha = 0.1f))
+                    .border(2.dp, iconBorderColor, RoundedCornerShape(34.dp))
+                    .pointerInput(isCurrentPage) {
+                        if (isCurrentPage) {
+                            detectTapGestures(
+                                onPress = {
+                                    isPressed = true
+                                    viewModel.startPushToTalk(pageIndex)
+                                    try {
                                         tryAwaitRelease()
+                                    } finally {
+                                        isPressed = false
                                         viewModel.endPushToTalk()
-                                    },
-                                )
-                            }
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    // Show gateway-supplied avatar (URL or inlined data URI),
-                    // else bundled default GIF, else emoji/initials fallback below.
-                    val imageData: Any? = when {
-                        resolvedAvatar != null -> resolvedAvatar
-                        hasDefaultGif -> "android.resource://${context.packageName}/$defaultGifResId"
-                        else -> null
-                    }
-                    if (imageData != null) {
-                        AsyncImage(
-                            model = ImageRequest.Builder(context)
-                                .data(imageData)
-                                .build(),
-                            imageLoader = imageLoader,
-                            contentDescription = agent.name,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clip(RoundedCornerShape(14.dp)),
-                        )
-                    } else {
-                        // Fallback: emoji or initials
-                        val label = when {
-                            isCurrentPage && voiceState == VoiceState.Listening -> "MIC"
-                            isCurrentPage && voiceState == VoiceState.Thinking -> "..."
-                            isCurrentPage && voiceState == VoiceState.Sending -> "..."
-                            isCurrentPage && voiceState == VoiceState.Speaking -> ">>>"
-                            !agent.emoji.isNullOrBlank() -> agent.emoji!!
-                            else -> agent.name.take(2).uppercase()
+                                    }
+                                },
+                            )
                         }
-                        Text(
-                            text = label,
-                            color = agentColor,
-                            fontSize = if (agent.emoji != null) 28.sp else 22.sp,
-                            fontWeight = FontWeight.Black,
-                            fontFamily = FontFamily.Monospace,
-                        )
-                    }
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                val imageData: Any? = when {
+                    resolvedAvatar != null -> resolvedAvatar
+                    hasDefaultGif -> "android.resource://${context.packageName}/$defaultGifResId"
+                    else -> null
                 }
-
-                Spacer(Modifier.height(8.dp))
-
-                // Agent name
-                Text(
-                    text = agent.name,
-                    color = agentColor,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace,
-                    textAlign = TextAlign.Center,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-
-                if (!agent.title.isNullOrBlank()) {
-                    Spacer(Modifier.height(2.dp))
+                if (imageData != null) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(imageData)
+                            .build(),
+                        imageLoader = imageLoader,
+                        contentDescription = agent.name,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(32.dp)),
+                    )
+                } else {
+                    // Fallback: emoji or initials, sized to the current box.
+                    val label = when {
+                        isCurrentPage && voiceState == VoiceState.Listening -> "MIC"
+                        isCurrentPage && voiceState == VoiceState.Thinking -> "..."
+                        isCurrentPage && voiceState == VoiceState.Sending -> "..."
+                        isCurrentPage && voiceState == VoiceState.Speaking -> ">>>"
+                        !agent.emoji.isNullOrBlank() -> agent.emoji!!
+                        else -> agent.name.take(2).uppercase()
+                    }
                     Text(
-                        text = agent.title,
-                        color = agentColor.copy(alpha = 0.6f),
-                        fontSize = 10.sp,
+                        text = label,
+                        color = agentColor,
+                        fontSize = if (agent.emoji != null) 48.sp else 38.sp,
+                        fontWeight = FontWeight.Black,
                         fontFamily = FontFamily.Monospace,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
                 }
+            }
 
-                Spacer(Modifier.height(4.dp))
+            // Tiny status strip under the GIF. Scrollable via flick so errors
+            // or long replies can be read without stealing visual focus from
+            // the avatar.
+            if (isCurrentPage) {
+                val statusText = when (voiceState) {
+                    VoiceState.Idle -> "hold to talk"
+                    VoiceState.Listening -> "listening…"
+                    VoiceState.Sending -> "sending…"
+                    VoiceState.Thinking -> "thinking…"
+                    VoiceState.Speaking -> "speaking…"
+                    VoiceState.Error -> "error"
+                }
 
-                // Status / transcript / response
-                if (isCurrentPage) {
-                    val statusText = when (voiceState) {
-                        VoiceState.Idle -> "hold to talk"
-                        VoiceState.Listening -> "listening…"
-                        VoiceState.Sending -> "sending…"
-                        VoiceState.Thinking -> "thinking…"
-                        VoiceState.Speaking -> "speaking…"
-                        VoiceState.Error -> "error"
-                    }
+                val displayText = when {
+                    voiceState == VoiceState.Listening && !liveTranscript.isNullOrBlank() -> liveTranscript!!
+                    responseText != null -> responseText!!
+                    else -> statusText
+                }
 
-                    val displayText = when {
-                        voiceState == VoiceState.Listening && !liveTranscript.isNullOrBlank() -> liveTranscript!!
-                        responseText != null -> responseText!!
-                        else -> statusText
-                    }
+                val textColor = when {
+                    voiceState == VoiceState.Error -> Color.Red
+                    voiceState == VoiceState.Idle -> agentColor.copy(alpha = 0.35f)
+                    responseText != null && voiceState != VoiceState.Listening -> Color(0xFFCCDDCC)
+                    else -> agentColor.copy(alpha = 0.65f)
+                }
 
-                    val textColor = when {
-                        voiceState == VoiceState.Error -> Color.Red
-                        voiceState == VoiceState.Idle -> agentColor.copy(alpha = 0.4f)
-                        responseText != null && voiceState != VoiceState.Listening -> Color(0xFFCCDDCC)
-                        else -> agentColor.copy(alpha = 0.7f)
-                    }
-
+                val statusScrollState = rememberScrollState()
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 6.dp, start = 28.dp, end = 28.dp)
+                        .fillMaxWidth()
+                        .height(28.dp)
+                        .verticalScroll(statusScrollState),
+                ) {
                     Text(
                         text = displayText,
                         color = textColor,
-                        fontSize = 10.sp,
+                        fontSize = 8.sp,
                         fontFamily = FontFamily.Monospace,
                         textAlign = TextAlign.Center,
-                        maxLines = 4,
-                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -430,29 +413,84 @@ fun AgentDialScreen(viewModel: WearViewModel) {
                 }
             }
 
-            // Page indicator dots at bottom
-            if (agents.size > 1) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(bottom = 12.dp),
-                    contentAlignment = Alignment.BottomCenter,
-                ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        agents.forEachIndexed { index, a ->
-                            val dotColor = parseThemeColor(a.theme) ?: OmnitrixGreen
-                            Box(
-                                modifier = Modifier
-                                    .size(if (index == pagerState.currentPage) 6.dp else 4.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        if (index == pagerState.currentPage) dotColor
-                                        else dotColor.copy(alpha = 0.3f),
-                                    ),
-                            )
-                        }
-                    }
-                }
+        }
+    }
+        // Screen-fixed indicator overlay. Lives OUTSIDE the pager so chips
+        // stay put while pages swipe — the only thing that changes is the
+        // active-page highlight shifting between chips.
+        AgentDialIndicatorOverlay(agents = agents, currentPage = pagerState.currentPage)
+    }
+}
+
+/**
+ * Screen-fixed overlay that paints the page-indicator chips in a ring around
+ * the watch face. Lives outside the HorizontalPager so chips don't shift when
+ * pages swipe — only their highlight/size state changes as the active page
+ * moves.
+ *
+ * Chips use a **fixed 10° angular step** starting at 12 o'clock and going
+ * clockwise. 18 agents cover the top semi-circle (12 → 3 → 6); 36 agents
+ * complete a full revolution. More than 36 agents are still navigable via
+ * swipe/rotary but won't have an indicator chip.
+ */
+@Composable
+private fun AgentDialIndicatorOverlay(
+    agents: List<PhoneBridge.Agent>,
+    currentPage: Int,
+) {
+    if (agents.size <= 1) return
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val faceDiameterDp = if (maxWidth < maxHeight) maxWidth else maxHeight
+        val faceRadiusDp = faceDiameterDp / 2
+        // Pull the chip ring in slightly so the active (larger) chip still
+        // fits entirely inside the display.
+        val arcRadiusDp = faceRadiusDp - 12.dp
+        val displayed = agents.take(36)
+
+        displayed.forEachIndexed { index, a ->
+            // Fixed 10° step: 18 slots → half circle (top → bottom via right
+            // edge), 36 slots → full revolution.
+            val angleDeg = -90f + index * 10f
+            val angleRad = Math.toRadians(angleDeg.toDouble())
+            val offsetXDp = (arcRadiusDp.value * cos(angleRad).toFloat()).dp
+            val offsetYDp = (arcRadiusDp.value * sin(angleRad).toFloat()).dp
+
+            val dotColor = parseThemeColor(a.theme) ?: OmnitrixGreen
+            val isCurrent = index == currentPage
+            // Chip sizes shrunk ~20% from the previous vertical-column layout
+            // so a full 24-dot ring doesn't visually collide.
+            val dotSize = if (isCurrent) 16.dp else 11.dp
+            val label =
+                a.emoji?.takeIf { it.isNotBlank() }
+                    ?: a.name.take(1).uppercase()
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .offset(x = offsetXDp, y = offsetYDp)
+                    .size(dotSize)
+                    .clip(CircleShape)
+                    .background(
+                        if (isCurrent) dotColor.copy(alpha = 0.7f)
+                        else dotColor.copy(alpha = 0.25f),
+                    )
+                    .border(
+                        width = if (isCurrent) 1.5.dp else 1.dp,
+                        color = if (isCurrent) dotColor
+                        else dotColor.copy(alpha = 0.5f),
+                        shape = CircleShape,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = label,
+                    color = Color.White,
+                    fontSize = if (isCurrent) 9.sp else 7.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                )
             }
         }
     }

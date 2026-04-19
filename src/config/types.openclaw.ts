@@ -122,6 +122,17 @@ export type OpenClawConfig = {
   gateway?: GatewayConfig;
   memory?: MemoryConfig;
   mcp?: McpConfig;
+  /**
+   * Capability descriptor the gateway surfaces to clients via `config.get →
+   * dataPlane`. Lets phone/watch companions know where to fetch `/assets/*`
+   * and whether TTS streaming is available without having to guess.
+   */
+  dataPlane?: {
+    baseUrl?: string;
+    publicAssets?: boolean;
+    streamTts?: boolean;
+    [key: string]: unknown;
+  };
 };
 
 declare const openClawConfigStateBrand: unique symbol;

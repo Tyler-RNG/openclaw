@@ -964,6 +964,16 @@ export const OpenClawSchema = z
       })
       .strict()
       .optional(),
+    // Data-plane capability block surfaced to clients via `config.get`.
+    // Passthrough — fields are descriptive, not load-bearing for the schema.
+    dataPlane: z
+      .object({
+        baseUrl: z.string().optional(),
+        publicAssets: z.boolean().optional(),
+        streamTts: z.boolean().optional(),
+      })
+      .passthrough()
+      .optional(),
   })
   .strict()
   .superRefine((cfg, ctx) => {

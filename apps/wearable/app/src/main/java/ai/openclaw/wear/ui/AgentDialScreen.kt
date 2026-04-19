@@ -24,6 +24,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.wear.compose.material.CircularProgressIndicator
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -142,7 +143,7 @@ fun AgentDialScreen(viewModel: WearViewModel) {
     val unreadByAgent by viewModel.unreadByAgent.collectAsState()
     val pendingMailJump by viewModel.pendingMailJump.collectAsState()
     val avatarAssets by viewModel.avatarAssets.collectAsState()
-    val avatarVersion by viewModel.avatarVersion.collectAsState()
+    val avatarVersions by viewModel.avatarVersions.collectAsState()
 
     // Request focus so rotary events reach this composable
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
@@ -192,10 +193,11 @@ fun AgentDialScreen(viewModel: WearViewModel) {
         val agent = agents[pageIndex]
         val isCurrentPage = pagerState.currentPage == pageIndex
         val agentColor = parseThemeColor(agent.theme) ?: OmnitrixGreen
-        val resolvedAvatar = remember(agent.avatarUrl, avatarAssets, avatarVersion) {
+        val agentVersion = avatarVersions[agent.id] ?: 0
+        val resolvedAvatar = remember(agent.avatarUrl, avatarAssets, agentVersion) {
             val model = resolveAvatarModel(agent.avatarUrl, avatarAssets)
             val size = (model as? ByteArray)?.size ?: 0
-            Log.d("AgentDialScreen", "avatar update for ${agent.id}: size=${size}B, version=$avatarVersion")
+            Log.d("AgentDialScreen", "avatar update for ${agent.id}: size=${size}B, version=$agentVersion")
             model
         }
 
@@ -284,7 +286,7 @@ fun AgentDialScreen(viewModel: WearViewModel) {
                     AsyncImage(
                         model = ImageRequest.Builder(context)
                             .data(imageData)
-                            .memoryCacheKey("avatar:${agent.id}:$avatarVersion")
+                            .memoryCacheKey("avatar:${agent.id}:$agentVersion")
                             .build(),
                         imageLoader = imageLoader,
                         contentDescription = agent.name,
@@ -293,6 +295,30 @@ fun AgentDialScreen(viewModel: WearViewModel) {
                             .fillMaxSize()
                             .clip(RoundedCornerShape(32.dp)),
                     )
+                    // Thinking overlay: small spinner at the top of the avatar
+                    // box to cue "waiting on reply" without occluding the GIF.
+                    // TODO(wear-thinking-pause): Coil 3 AnimatedImageDecoder
+                    // doesn't expose a simple repeat-count knob, so the
+                    // thinking.gif keeps looping underneath for now. To get
+                    // "play once, pause on last frame" we'd need to decode
+                    // via AnimatedImageDrawable directly (setRepeatCount(0))
+                    // and render through rememberDrawablePainter — planned
+                    // follow-up, not worth the churn this pass.
+                    if (isCurrentPage && voiceState == VoiceState.Thinking) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(top = 8.dp),
+                            contentAlignment = Alignment.TopCenter,
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(22.dp),
+                                strokeWidth = 2.dp,
+                                indicatorColor = Color(0xFFFFAA00),
+                                trackColor = Color.Black.copy(alpha = 0.45f),
+                            )
+                        }
+                    }
                 } else {
                     // Fallback: emoji or initials, sized to the current box.
                     val label = when {

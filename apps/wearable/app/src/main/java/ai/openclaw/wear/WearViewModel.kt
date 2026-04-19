@@ -49,8 +49,12 @@ class WearViewModel(app: Application) : AndroidViewModel(app) {
     /** Avatar bytes keyed by agentId; exposed to UI for `wear-asset:avatar:*` refs. */
     val avatarAssets: StateFlow<Map<String, ByteArray>> get() = assetStore.avatars
 
-    /** Counter bumped on every avatar byte update — drives Coil memory-cache busting. */
-    val avatarVersion: StateFlow<Int> get() = assetStore.avatarVersion
+    /**
+     * Per-agent counter bumped only when THAT agent's bytes change. Used as
+     * part of the Coil memory-cache key so agent A's byte arrival doesn't
+     * invalidate agent B's decoded GIF and force an animation restart.
+     */
+    val avatarVersions: StateFlow<Map<String, Int>> get() = assetStore.avatarVersions
 
     // --- Screen navigation ---
     private val _screen = MutableStateFlow(WearScreen.Connecting)

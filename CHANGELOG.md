@@ -54,6 +54,7 @@ Docs: https://docs.openclaw.ai
 - Agents/context engines: keep loop-hook and final `afterTurn` prompt-cache touch metadata aligned with the current assistant turn so cache-aware context engines retain accurate cache TTL state during tool loops. (#67767) thanks @jalehman.
 - Memory/dreaming: strip AI-facing inbound metadata envelopes from session-corpus user turns before normalization so REM topic extraction sees the user's actual message text, including array-shaped split envelopes. (#66548) Thanks @zqchris.
 - Agents/errors: detect standalone Cloudflare/CDN HTML challenge pages before transport DNS classification so provider block pages no longer appear as local DNS lookup failures. (#67704) Thanks @chris-yyau.
+- Gateway/assets: move the optional asset-serving endpoint from `/assets/*` to `/openclaw-assets/*` so enabling `gateway.http.endpoints.assets` no longer 401s the dashboard's own Vite bundles at `/assets/index-*.js`. Clients that fetch avatar gifs (Android/Wear relay) and the exported `dataPlane` capability comment are updated to the new prefix; dashboard static bundles continue to serve from `/assets/*` unchanged.
 
 ## 2026.4.15-beta.1
 

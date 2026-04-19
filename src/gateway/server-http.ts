@@ -278,7 +278,7 @@ function isSessionHistoryPath(pathname: string): boolean {
 }
 
 function isAssetsPath(pathname: string): boolean {
-  return pathname === "/assets" || pathname.startsWith("/assets/");
+  return pathname === "/openclaw-assets" || pathname.startsWith("/openclaw-assets/");
 }
 
 function isStreamTtsPath(pathname: string): boolean {
@@ -924,10 +924,8 @@ export function createGatewayHttpServer(opts: {
   } = opts;
   const getResolvedAuth = opts.getResolvedAuth ?? (() => resolvedAuth);
   const openAiCompatEnabled = openAiChatCompletionsEnabled || openResponsesEnabled;
-  const assetsHttpEnabled =
-    assetsHttpEnabledOpt ?? assetsHttpConfig?.enabled === true;
-  const streamTtsHttpEnabled =
-    streamTtsHttpEnabledOpt ?? streamTtsHttpConfig?.enabled === true;
+  const assetsHttpEnabled = assetsHttpEnabledOpt ?? assetsHttpConfig?.enabled === true;
+  const streamTtsHttpEnabled = streamTtsHttpEnabledOpt ?? streamTtsHttpConfig?.enabled === true;
   const httpServer: HttpServer = opts.tlsOptions
     ? createHttpsServer(opts.tlsOptions, (req, res) => {
         void handleRequest(req, res);
@@ -1035,7 +1033,7 @@ export function createGatewayHttpServer(opts: {
           run: async () =>
             (await getAssetsHttpModule()).handleAssetsHttpRequest(req, res, {
               auth: resolvedAuth,
-              config: { ...(assetsHttpConfig ?? {}), enabled: true },
+              config: { ...assetsHttpConfig, enabled: true },
               trustedProxies,
               allowRealIpFallback,
               rateLimiter,
@@ -1048,7 +1046,7 @@ export function createGatewayHttpServer(opts: {
           run: async () =>
             (await getTtsHttpModule()).handleStreamTtsHttpRequest(req, res, {
               auth: resolvedAuth,
-              config: { ...(streamTtsHttpConfig ?? {}), enabled: true },
+              config: { ...streamTtsHttpConfig, enabled: true },
               trustedProxies,
               allowRealIpFallback,
               rateLimiter,

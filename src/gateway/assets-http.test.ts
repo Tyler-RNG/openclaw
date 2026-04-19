@@ -3,8 +3,8 @@ import type { IncomingMessage } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { ResolvedGatewayAuth } from "./auth.js";
 import { handleAssetsHttpRequest, isAssetsHttpPath } from "./assets-http.js";
+import type { ResolvedGatewayAuth } from "./auth.js";
 import { makeMockHttpResponse } from "./test-http-response.js";
 import { withTempConfig } from "./test-temp-config.js";
 
@@ -46,7 +46,7 @@ function makeRequest(params: {
 }): IncomingMessage {
   const headers: Record<string, string> = {
     host: params.host ?? "127.0.0.1:18789",
-    ...(params.headers ?? {}),
+    ...params.headers,
   };
   if (params.authorization) {
     headers.authorization = params.authorization;
@@ -71,14 +71,14 @@ async function readResponseBody(res: ReturnType<typeof makeMockHttpResponse>["re
 }
 
 describe("isAssetsHttpPath", () => {
-  it("matches /assets and /assets/...", () => {
-    expect(isAssetsHttpPath("/assets")).toBe(true);
-    expect(isAssetsHttpPath("/assets/avatars/x.gif")).toBe(true);
+  it("matches /openclaw-assets and /openclaw-assets/...", () => {
+    expect(isAssetsHttpPath("/openclaw-assets")).toBe(true);
+    expect(isAssetsHttpPath("/openclaw-assets/avatars/x.gif")).toBe(true);
   });
   it("does not match other paths", () => {
     expect(isAssetsHttpPath("/v1/models")).toBe(false);
     expect(isAssetsHttpPath("/stream/tts")).toBe(false);
-    expect(isAssetsHttpPath("/assetsX")).toBe(false);
+    expect(isAssetsHttpPath("/openclaw-assetsX")).toBe(false);
   });
 });
 
@@ -94,7 +94,7 @@ describe("handleAssetsHttpRequest — gating", () => {
   it("returns false when the config is not enabled", async () => {
     const { res } = makeMockHttpResponse();
     const handled = await handleAssetsHttpRequest(
-      makeRequest({ url: "/assets/hello.gif" }),
+      makeRequest({ url: "/openclaw-assets/hello.gif" }),
       res,
       {
         auth: AUTH_NONE,
@@ -106,14 +106,10 @@ describe("handleAssetsHttpRequest — gating", () => {
 
   it("returns false when the pathname doesn't match", async () => {
     const { res } = makeMockHttpResponse();
-    const handled = await handleAssetsHttpRequest(
-      makeRequest({ url: "/v1/models" }),
-      res,
-      {
-        auth: AUTH_NONE,
-        config: { enabled: true, assetsDir: fx.assetsDir, publicAssets: true },
-      },
-    );
+    const handled = await handleAssetsHttpRequest(makeRequest({ url: "/v1/models" }), res, {
+      auth: AUTH_NONE,
+      config: { enabled: true, assetsDir: fx.assetsDir, publicAssets: true },
+    });
     expect(handled).toBe(false);
   });
 });
@@ -131,7 +127,7 @@ describe("handleAssetsHttpRequest — serving", () => {
     const { res, setHeader } = makeMockHttpResponse();
     const bodyPromise = readResponseBody(res);
     const handled = await handleAssetsHttpRequest(
-      makeRequest({ url: "/assets/hello.gif" }),
+      makeRequest({ url: "/openclaw-assets/hello.gif" }),
       res,
       {
         auth: AUTH_NONE,
@@ -148,28 +144,20 @@ describe("handleAssetsHttpRequest — serving", () => {
   it("serves nested files", async () => {
     const { res } = makeMockHttpResponse();
     const bodyPromise = readResponseBody(res);
-    await handleAssetsHttpRequest(
-      makeRequest({ url: "/assets/sub/inner.png" }),
-      res,
-      {
-        auth: AUTH_NONE,
-        config: { enabled: true, assetsDir: fx.assetsDir, publicAssets: true },
-      },
-    );
+    await handleAssetsHttpRequest(makeRequest({ url: "/openclaw-assets/sub/inner.png" }), res, {
+      auth: AUTH_NONE,
+      config: { enabled: true, assetsDir: fx.assetsDir, publicAssets: true },
+    });
     expect(res.statusCode).toBe(200);
     expect((await bodyPromise).toString()).toBe("PNG fake");
   });
 
   it("sets ETag and honours If-None-Match with 304", async () => {
     const first = makeMockHttpResponse();
-    await handleAssetsHttpRequest(
-      makeRequest({ url: "/assets/hello.gif" }),
-      first.res,
-      {
-        auth: AUTH_NONE,
-        config: { enabled: true, assetsDir: fx.assetsDir, publicAssets: true },
-      },
-    );
+    await handleAssetsHttpRequest(makeRequest({ url: "/openclaw-assets/hello.gif" }), first.res, {
+      auth: AUTH_NONE,
+      config: { enabled: true, assetsDir: fx.assetsDir, publicAssets: true },
+    });
     const etagCall = first.setHeader.mock.calls.find((c) => c[0] === "ETag");
     expect(etagCall).toBeDefined();
     const etag = String(etagCall?.[1] ?? "");
@@ -177,7 +165,7 @@ describe("handleAssetsHttpRequest — serving", () => {
 
     const second = makeMockHttpResponse();
     const handled = await handleAssetsHttpRequest(
-      makeRequest({ url: "/assets/hello.gif", ifNoneMatch: etag }),
+      makeRequest({ url: "/openclaw-assets/hello.gif", ifNoneMatch: etag }),
       second.res,
       {
         auth: AUTH_NONE,
@@ -191,7 +179,7 @@ describe("handleAssetsHttpRequest — serving", () => {
   it("handles HEAD without body", async () => {
     const { res, setHeader, end } = makeMockHttpResponse();
     await handleAssetsHttpRequest(
-      makeRequest({ url: "/assets/hello.gif", method: "HEAD" }),
+      makeRequest({ url: "/openclaw-assets/hello.gif", method: "HEAD" }),
       res,
       {
         auth: AUTH_NONE,
@@ -208,7 +196,7 @@ describe("handleAssetsHttpRequest — serving", () => {
   it("rejects non-GET/HEAD with 405", async () => {
     const { res, setHeader } = makeMockHttpResponse();
     const handled = await handleAssetsHttpRequest(
-      makeRequest({ url: "/assets/hello.gif", method: "POST" }),
+      makeRequest({ url: "/openclaw-assets/hello.gif", method: "POST" }),
       res,
       {
         auth: AUTH_NONE,
@@ -223,14 +211,10 @@ describe("handleAssetsHttpRequest — serving", () => {
   it("returns 400 when path is missing", async () => {
     const { res } = makeMockHttpResponse();
     const bodyPromise = readResponseBody(res);
-    const handled = await handleAssetsHttpRequest(
-      makeRequest({ url: "/assets" }),
-      res,
-      {
-        auth: AUTH_NONE,
-        config: { enabled: true, assetsDir: fx.assetsDir, publicAssets: true },
-      },
-    );
+    const handled = await handleAssetsHttpRequest(makeRequest({ url: "/openclaw-assets" }), res, {
+      auth: AUTH_NONE,
+      config: { enabled: true, assetsDir: fx.assetsDir, publicAssets: true },
+    });
     expect(handled).toBe(true);
     expect(res.statusCode).toBe(400);
     expect((await bodyPromise).toString()).toContain("Missing asset path");
@@ -252,7 +236,7 @@ describe("handleAssetsHttpRequest — security guards", () => {
   it("rejects percent-encoded separator traversal", async () => {
     const { res } = makeMockHttpResponse();
     await handleAssetsHttpRequest(
-      makeRequest({ url: "/assets/a%2f..%2fpackage.json" }),
+      makeRequest({ url: "/openclaw-assets/a%2f..%2fpackage.json" }),
       res,
       {
         auth: AUTH_NONE,
@@ -266,27 +250,19 @@ describe("handleAssetsHttpRequest — security guards", () => {
 
   it("rejects hidden files with 403", async () => {
     const { res } = makeMockHttpResponse();
-    await handleAssetsHttpRequest(
-      makeRequest({ url: "/assets/.hidden" }),
-      res,
-      {
-        auth: AUTH_NONE,
-        config: { enabled: true, assetsDir: fx.assetsDir, publicAssets: true },
-      },
-    );
+    await handleAssetsHttpRequest(makeRequest({ url: "/openclaw-assets/.hidden" }), res, {
+      auth: AUTH_NONE,
+      config: { enabled: true, assetsDir: fx.assetsDir, publicAssets: true },
+    });
     expect(res.statusCode).toBe(403);
   });
 
   it("returns 404 for missing file", async () => {
     const { res } = makeMockHttpResponse();
-    await handleAssetsHttpRequest(
-      makeRequest({ url: "/assets/nope.gif" }),
-      res,
-      {
-        auth: AUTH_NONE,
-        config: { enabled: true, assetsDir: fx.assetsDir, publicAssets: true },
-      },
-    );
+    await handleAssetsHttpRequest(makeRequest({ url: "/openclaw-assets/nope.gif" }), res, {
+      auth: AUTH_NONE,
+      config: { enabled: true, assetsDir: fx.assetsDir, publicAssets: true },
+    });
     expect(res.statusCode).toBe(404);
   });
 
@@ -295,19 +271,15 @@ describe("handleAssetsHttpRequest — security guards", () => {
     await fs.writeFile(big, Buffer.alloc(2048));
     try {
       const { res } = makeMockHttpResponse();
-      await handleAssetsHttpRequest(
-        makeRequest({ url: "/assets/big.gif" }),
-        res,
-        {
-          auth: AUTH_NONE,
-          config: {
-            enabled: true,
-            assetsDir: fx.assetsDir,
-            publicAssets: true,
-            maxAssetSizeBytes: 1024,
-          },
+      await handleAssetsHttpRequest(makeRequest({ url: "/openclaw-assets/big.gif" }), res, {
+        auth: AUTH_NONE,
+        config: {
+          enabled: true,
+          assetsDir: fx.assetsDir,
+          publicAssets: true,
+          maxAssetSizeBytes: 1024,
         },
-      );
+      });
       expect(res.statusCode).toBe(413);
     } finally {
       await fs.rm(big, { force: true });
@@ -316,14 +288,10 @@ describe("handleAssetsHttpRequest — security guards", () => {
 
   it("rejects NUL bytes in path", async () => {
     const { res } = makeMockHttpResponse();
-    await handleAssetsHttpRequest(
-      makeRequest({ url: "/assets/%00evil.gif" }),
-      res,
-      {
-        auth: AUTH_NONE,
-        config: { enabled: true, assetsDir: fx.assetsDir, publicAssets: true },
-      },
-    );
+    await handleAssetsHttpRequest(makeRequest({ url: "/openclaw-assets/%00evil.gif" }), res, {
+      auth: AUTH_NONE,
+      config: { enabled: true, assetsDir: fx.assetsDir, publicAssets: true },
+    });
     expect(res.statusCode).toBe(400);
   });
 });
@@ -343,14 +311,10 @@ describe("handleAssetsHttpRequest — auth", () => {
       cfg: { gateway: { trustedProxies: [] } },
       run: async () => {
         const { res } = makeMockHttpResponse();
-        await handleAssetsHttpRequest(
-          makeRequest({ url: "/assets/hello.gif" }),
-          res,
-          {
-            auth: AUTH_TOKEN,
-            config: { enabled: true, assetsDir: fx.assetsDir, publicAssets: false },
-          },
-        );
+        await handleAssetsHttpRequest(makeRequest({ url: "/openclaw-assets/hello.gif" }), res, {
+          auth: AUTH_TOKEN,
+          config: { enabled: true, assetsDir: fx.assetsDir, publicAssets: false },
+        });
         expect(res.statusCode).toBe(401);
       },
     });
@@ -364,7 +328,7 @@ describe("handleAssetsHttpRequest — auth", () => {
         const { res } = makeMockHttpResponse();
         await handleAssetsHttpRequest(
           makeRequest({
-            url: "/assets/hello.gif",
+            url: "/openclaw-assets/hello.gif",
             authorization: "Bearer test-token",
           }),
           res,
@@ -385,7 +349,7 @@ describe("handleAssetsHttpRequest — auth", () => {
       run: async () => {
         const { res } = makeMockHttpResponse();
         await handleAssetsHttpRequest(
-          makeRequest({ url: "/assets/hello.gif?token=test-token" }),
+          makeRequest({ url: "/openclaw-assets/hello.gif?token=test-token" }),
           res,
           {
             auth: AUTH_TOKEN,
@@ -404,7 +368,7 @@ describe("handleAssetsHttpRequest — auth", () => {
       run: async () => {
         const { res } = makeMockHttpResponse();
         await handleAssetsHttpRequest(
-          makeRequest({ url: "/assets/hello.gif?token=wrong" }),
+          makeRequest({ url: "/openclaw-assets/hello.gif?token=wrong" }),
           res,
           {
             auth: AUTH_TOKEN,

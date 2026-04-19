@@ -356,7 +356,7 @@ class WearRelayService : WearableListenerService() {
     val encoded = clean.split('/').joinToString("/") { segment ->
       java.net.URLEncoder.encode(segment, Charsets.UTF_8.name()).replace("+", "%20")
     }
-    val base = "${dataPlane.baseUrl}/assets/$encoded"
+    val base = "${dataPlane.baseUrl}/openclaw-assets/$encoded"
     return if (!dataPlane.publicAssets && !token.isNullOrEmpty()) {
       val tokenEnc = java.net.URLEncoder.encode(token, Charsets.UTF_8.name())
       "$base?token=$tokenEnc"
@@ -550,7 +550,7 @@ class WearRelayService : WearableListenerService() {
           // Relative path — resolve against the gateway's data-plane base URL
           // the same way the legacy avatar flow does. Covers the native-deploy
           // case where the gateway emits raw config values for state files and
-          // clients are expected to prefix with <publicBaseUrl>/assets/.
+          // clients are expected to prefix with <publicBaseUrl>/openclaw-assets/.
           dataPlane != null -> buildDataPlaneAssetUrl(dataPlane, token, ref)
             ?.let { fetchUrlAsBytes(it) }
           else -> null

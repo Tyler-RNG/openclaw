@@ -330,17 +330,18 @@ export type GatewayHttpResponsesImagesConfig = {
 
 export type GatewayHttpAssetsConfig = {
   /**
-   * If true, serve `GET /assets/<path>` from the gateway itself.
-   * Default: false.
+   * If true, serve `GET /openclaw-assets/<path>` from the gateway itself.
+   * Prefix is namespaced to avoid colliding with the dashboard's
+   * Vite-built `/assets/*` bundles. Default: false.
    */
   enabled?: boolean;
   /**
-   * Filesystem root for `GET /assets/*`.
+   * Filesystem root for `GET /openclaw-assets/*`.
    * If relative, resolved against the gateway's state dir.
    * Default: "./assets".
    */
   assetsDir?: string;
-  /** Skip auth on `/assets/*` (avatars etc). Default: false. */
+  /** Skip auth on `/openclaw-assets/*` (avatars etc). Default: false. */
   publicAssets?: boolean;
   /** Max file size in bytes. Default: 10 MB. */
   maxAssetSizeBytes?: number;

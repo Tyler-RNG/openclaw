@@ -4,16 +4,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import { resolveStateDir } from "../config/paths.js";
 import type { GatewayHttpAssetsConfig } from "../config/types.gateway.js";
-import {
-  authorizeHttpGatewayConnect,
-  type ResolvedGatewayAuth,
-} from "./auth.js";
 import type { AuthRateLimiter } from "./auth-rate-limit.js";
-import {
-  sendGatewayAuthFailure,
-  sendJson,
-  sendMethodNotAllowed,
-} from "./http-common.js";
+import { authorizeHttpGatewayConnect, type ResolvedGatewayAuth } from "./auth.js";
+import { sendGatewayAuthFailure, sendJson, sendMethodNotAllowed } from "./http-common.js";
 import { getBearerToken, resolveHttpBrowserOriginPolicy } from "./http-utils.js";
 
 const DEFAULT_MAX_ASSET_BYTES = 10 * 1024 * 1024;
@@ -39,7 +32,7 @@ export type AssetsHttpOptions = {
 };
 
 export function isAssetsHttpPath(pathname: string): boolean {
-  return pathname === "/assets" || pathname.startsWith("/assets/");
+  return pathname === "/openclaw-assets" || pathname.startsWith("/openclaw-assets/");
 }
 
 function resolveAssetsDir(cfg: GatewayHttpAssetsConfig): string {
@@ -202,7 +195,7 @@ export async function handleAssetsHttpRequest(
     return true;
   }
 
-  const relPath = url.pathname.replace(/^\/assets\/?/, "");
+  const relPath = url.pathname.replace(/^\/openclaw-assets\/?/, "");
   if (!relPath) {
     sendJson(res, 400, {
       error: { message: "Missing asset path", type: "invalid_request_error" },

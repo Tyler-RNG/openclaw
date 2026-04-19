@@ -13,8 +13,16 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -140,12 +148,61 @@ fun ChatSheetContent(viewModel: MainViewModel) {
         .padding(horizontal = 20.dp, vertical = 12.dp),
     verticalArrangement = Arrangement.spacedBy(8.dp),
   ) {
-    ChatThreadSelector(
-      sessionKey = sessionKey,
-      sessions = sessions,
-      mainSessionKey = mainSessionKey,
-      onSelectSession = { key -> viewModel.switchChatSession(key) },
-    )
+    var showWipeDialog by remember { mutableStateOf(false) }
+
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+    ) {
+      ChatThreadSelector(
+        sessionKey = sessionKey,
+        sessions = sessions,
+        mainSessionKey = mainSessionKey,
+        onSelectSession = { key -> viewModel.switchChatSession(key) },
+        modifier = Modifier.weight(1f),
+      )
+      // Wipe the active session's memory. Sends `/new` which the gateway's
+      // RESET_COMMAND_RE matches and resolves via performGatewaySessionReset.
+      // Same session key the wear relay uses, so this also wipes the watch's
+      // view of this conversation (both sides share the host phone's deviceId).
+      IconButton(
+        onClick = { showWipeDialog = true },
+        enabled = healthOk && pendingRunCount == 0,
+      ) {
+        Icon(
+          imageVector = Icons.Default.DeleteSweep,
+          contentDescription = "Wipe this session's memory",
+          tint = mobileTextSecondary,
+        )
+      }
+    }
+
+    if (showWipeDialog) {
+      AlertDialog(
+        onDismissRequest = { showWipeDialog = false },
+        title = { Text("Wipe this session's memory?") },
+        text = {
+          Text(
+            "The agent will start a fresh conversation next turn. " +
+              "Transcript remains in history; only the agent's memory of this thread is reset. " +
+              "This also resets what the watch's version of this agent remembers.",
+          )
+        },
+        confirmButton = {
+          TextButton(onClick = {
+            showWipeDialog = false
+            viewModel.sendChat(message = "/new", thinking = thinkingLevel, attachments = emptyList())
+          }) {
+            Text("Wipe", color = mobileDanger)
+          }
+        },
+        dismissButton = {
+          TextButton(onClick = { showWipeDialog = false }) {
+            Text("Cancel")
+          }
+        },
+      )
+    }
 
     if (!errorText.isNullOrBlank()) {
       ChatErrorRail(errorText = errorText!!)
@@ -200,6 +257,7 @@ private fun ChatThreadSelector(
   sessions: List<ChatSessionEntry>,
   mainSessionKey: String,
   onSelectSession: (String) -> Unit,
+  modifier: Modifier = Modifier,
 ) {
   val sessionOptions =
     remember(sessionKey, sessions, mainSessionKey) {
@@ -207,7 +265,7 @@ private fun ChatThreadSelector(
     }
 
   Row(
-    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+    modifier = modifier.horizontalScroll(rememberScrollState()),
     horizontalArrangement = Arrangement.spacedBy(8.dp),
   ) {
     for (entry in sessionOptions) {

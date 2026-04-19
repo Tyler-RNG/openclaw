@@ -63,6 +63,7 @@ Docs: https://docs.openclaw.ai
 - Gateway/agents.list: add a public-contract round-trip test locking in that every outbound agent field (voice, identity, avatarStates, model) makes it from `openclaw.json` to the wire via `listAgentsForGateway`. Second regression of this class (voice silently dropped after schema accepted it) was painful enough to bolt down.
 - Config/diagnostics: when zod returns `invalid_union` without a more specific handler (SecretRef-shaped mistakes being the common case), surface the deepest per-arm issue (`gateway.http.endpoints.streamTts.apiKey.source: expected 'env'`) instead of the generic top-level "Invalid input" that required source-diving to interpret.
 - Config/io: add a lock-in test that `writeConfigFile` rejects the `gateway.bind=0.0.0.0` + `gateway.tailscale.mode=serve` cross-field combo before it lands on disk. Transactional validation already existed in `writeConfigFile`; the test pins it so future refactors can't regress the guarantee.
+- Android/chat: add a wipe-session icon button to the chat sheet's thread selector row. Sends `/new` to the active session, hitting the gateway's `RESET_COMMAND_RE` → `performGatewaySessionReset`. Because the phone and watch relay share the same `main:<deviceId>:<agentId>` session key (watch chats run under the host phone's device id), wiping from the phone also resets what the watch's view of that agent remembers. Confirmation dialog explains that transcript history stays; only the agent's live memory of this thread is cleared.
 
 ## 2026.4.15-beta.1
 

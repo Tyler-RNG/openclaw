@@ -833,6 +833,29 @@ export const OpenClawSchema = z
                   })
                   .strict()
                   .optional(),
+                // Native in-gateway replacement for the sidecar's
+                // GET /assets/<path> handler. Opt-in via enabled:true.
+                assets: z
+                  .object({
+                    enabled: z.boolean().optional(),
+                    assetsDir: z.string().optional(),
+                    publicAssets: z.boolean().optional(),
+                    maxAssetSizeBytes: z.number().int().positive().optional(),
+                    publicBaseUrl: z.string().optional(),
+                  })
+                  .strict()
+                  .optional(),
+                // Native in-gateway replacement for the sidecar's
+                // GET /stream/tts ElevenLabs proxy. Opt-in via enabled:true.
+                streamTts: z
+                  .object({
+                    enabled: z.boolean().optional(),
+                    provider: z.literal("elevenlabs").optional(),
+                    apiKey: SecretInputSchema.optional().register(sensitive),
+                    defaultModel: z.string().optional(),
+                  })
+                  .strict()
+                  .optional(),
               })
               .strict()
               .optional(),

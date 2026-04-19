@@ -107,43 +107,148 @@ class WearRelayService : WearableListenerService() {
         val agents = root.optJSONArray("agents") ?: return@withContext rawJson
         var published = 0
         var failed = 0
+        var statesAgents = 0
+        var agentsSeen = 0
         for (i in 0 until agents.length()) {
           val agentObj = agents.optJSONObject(i) ?: continue
           val agentId = agentObj.optString("id", "").trim().ifEmpty { continue }
           val identity = agentObj.optJSONObject("identity") ?: continue
+          agentsSeen++
+
+          // Legacy static avatar: publish bytes if one is configured.
           val key = when {
             identity.optString("avatarUrl", "").isNotBlank() -> "avatarUrl"
             identity.optString("avatar", "").isNotBlank() -> "avatar"
-            else -> continue
-          }
-          val value = identity.optString(key)
-          val fetched: Pair<ByteArray, String>? = when {
-            value.startsWith("data:") -> null
-            value.startsWith("file://") || value.startsWith("/") -> localPathToBytes(value)
-            value.startsWith("http://") || value.startsWith("https://") -> fetchUrlAsBytes(value)
-            dataPlane != null -> buildDataPlaneAssetUrl(dataPlane, token, value)?.let { fetchUrlAsBytes(it) }
             else -> null
           }
-          if (fetched != null) {
-            val (bytes, mime) = fetched
-            if (putAvatarAsset(app, agentId, bytes, mime)) {
-              identity.put(key, "wear-asset:avatar:$agentId")
-              published++
-            } else {
+          if (key != null) {
+            val value = identity.optString(key)
+            val fetched: Pair<ByteArray, String>? = when {
+              value.startsWith("data:") -> null
+              value.startsWith("file://") || value.startsWith("/") -> localPathToBytes(value)
+              value.startsWith("http://") || value.startsWith("https://") -> fetchUrlAsBytes(value)
+              dataPlane != null -> buildDataPlaneAssetUrl(dataPlane, token, value)?.let { fetchUrlAsBytes(it) }
+              else -> null
+            }
+            if (fetched != null) {
+              val (bytes, mime) = fetched
+              if (putAvatarAsset(app, agentId, bytes, mime)) {
+                identity.put(key, "wear-asset:avatar:$agentId")
+                published++
+              } else {
+                failed++
+              }
+            } else if (!value.startsWith("data:")) {
               failed++
             }
-          } else if (!value.startsWith("data:")) {
-            failed++
           }
+
+          // Capture multi-state descriptor if the sidecar synthesized one.
+          // Runs independent of the legacy-avatar branch so states-only agents
+          // still register. We leave the JSON field in place for any
+          // downstream inspection but the relay never forwards it to the
+          // watch (watch reads bytes, not state metadata).
+          if (identity.has("avatarStates")) {
+            statesAgents++
+          }
+          captureAvatarStates(agentId, identity)
         }
         if (published > 0 || failed > 0) {
           WearRelayLog.info("agents", "avatars: $published via asset, $failed failed")
         }
+        // Summary line so we can tell at a glance whether the sidecar is
+        // synthesizing avatarStates. If this says "states: 0/N", the sidecar
+        // interim path isn't active for any agent.
+        WearRelayLog.info("agents", "states: $statesAgents/$agentsSeen agents")
         root.toString()
       } catch (_: Throwable) {
         rawJson
       }
     }
+  }
+
+  /**
+   * Read `identity.avatarStates` (sidecar-synthesized) and stash the descriptor
+   * so subsequent chat turns can fire GIF swaps and inject the instruction.
+   * Safe no-op if the agent isn't states-configured.
+   *
+   * Logs enough to tell WHY capture failed (missing field, missing default,
+   * invalid entries) so interim-setup issues on the sidecar side are
+   * diagnosable from the relay panel alone.
+   */
+  private fun captureAvatarStates(agentId: String, identity: JSONObject) {
+    val avatarStates = identity.optJSONObject("avatarStates") ?: run {
+      // Agent reverted to a legacy string avatar — drop any prior descriptor
+      // so we don't inject a stale instruction.
+      if (AvatarStatesStore.get(agentId) != null) {
+        AvatarStatesStore.resetInstructedFlag(agentId)
+        WearRelayLog.info("agents", "$agentId: avatarStates dropped (no longer present)")
+      }
+      return
+    }
+
+    val defaultState = avatarStates.optString("default", "").trim()
+    if (defaultState.isEmpty()) {
+      WearRelayLog.warn("agents", "$agentId: avatarStates missing \"default\"")
+      return
+    }
+    val statesObj = avatarStates.optJSONObject("states") ?: run {
+      WearRelayLog.warn("agents", "$agentId: avatarStates missing \"states\" object")
+      return
+    }
+    val instruction = avatarStates.optString("instruction", "").trim()
+    if (instruction.isEmpty()) {
+      WearRelayLog.warn("agents", "$agentId: avatarStates missing \"instruction\"")
+      return
+    }
+
+    val states = mutableMapOf<String, AvatarStateEntry>()
+    val names = statesObj.keys()
+    var skipped = 0
+    while (names.hasNext()) {
+      val stateName = names.next()
+      val entry = statesObj.optJSONObject(stateName)
+      if (entry == null) {
+        skipped++
+        continue
+      }
+      val file = entry.optString("file", "").trim()
+      if (file.isEmpty()) {
+        skipped++
+        continue
+      }
+      val description = entry.optString("description", "").takeIf { it.isNotBlank() }
+      states[stateName] = AvatarStateEntry(file, description)
+    }
+    if (states.isEmpty()) {
+      WearRelayLog.warn("agents", "$agentId: avatarStates.states empty or all invalid")
+      return
+    }
+    if (!states.containsKey(defaultState)) {
+      WearRelayLog.warn(
+        "agents",
+        "$agentId: default=\"$defaultState\" not in states (${states.keys.joinToString(",")})",
+      )
+      return
+    }
+
+    val prior = AvatarStatesStore.get(agentId)
+    val descriptor = AvatarStatesDescriptor(
+      default = defaultState,
+      states = states,
+      instruction = instruction,
+    )
+    AvatarStatesStore.put(agentId, descriptor)
+    // Instruction text changed → agent gets re-briefed on the next turn so
+    // the model sees the updated roster of states.
+    if (prior != null && prior.instruction != instruction) {
+      AvatarStatesStore.resetInstructedFlag(agentId)
+    }
+    val skippedNote = if (skipped > 0) " ($skipped invalid)" else ""
+    WearRelayLog.info(
+      "agents",
+      "$agentId states: ${states.keys.joinToString(",")} default=$defaultState$skippedNote",
+    )
   }
 
   /** Publishes the avatar bytes as a DataClient Asset. Returns true on success. */
@@ -278,12 +383,60 @@ class WearRelayService : WearableListenerService() {
 
     reply(app, nodeId, PATH_CHAT_STATE, JSONObject().put("state", "thinking").put("agentId", agentId).toString())
 
+    // Multi-state avatar plumbing lives entirely here on the Wear relay path
+    // so generic agent interaction from other entry points (phone chat, other
+    // clients, etc.) is unaffected. We only bother if the sidecar told us
+    // this agent has an `avatarStates` descriptor.
+    val statesDesc = AvatarStatesStore.get(agentId)
+
+    val textForGateway = if (statesDesc != null && !AvatarStatesStore.hasInstructedAgent(agentId)) {
+      AvatarStatesStore.markInstructed(agentId)
+      WearRelayLog.info("chat", "$agentId: injecting avatar-states instruction")
+      buildInstructedMessage(statesDesc, text)
+    } else {
+      text
+    }
+
+    // Interim gateway-driven "thinking" lifecycle cue: the published openclaw
+    // doesn't yet fire avatar.state.change on run start, so we imitate it
+    // from the phone. If the agent has a state named "thinking", flip to it
+    // immediately on dispatch; reset to default when the reply finishes or
+    // the run errors. When the model emits its own markers mid-reply, those
+    // override the thinking frame naturally (last-write-wins on DataClient).
+    val thinkingEntry = statesDesc?.states?.get("thinking")
+    if (thinkingEntry != null) {
+      WearRelayLog.info("chat", "$agentId avatar: thinking (dispatch)")
+      WearRelayScope.launch {
+        publishStateAvatar(app, agentId, "thinking", thinkingEntry)
+      }
+    }
+
     var seq = 0
-    val error = runtime.wearRelayChatStream(agentId, text) { part ->
+    val error = runtime.wearRelayChatStream(agentId, textForGateway) { part ->
+      val (cleanedText, markers) = if (statesDesc != null) {
+        val parsed = parseAvatarMarkers(part.text)
+        parsed.cleanedText to parsed.markers
+      } else {
+        part.text to emptyList()
+      }
+
+      // Fire GIF swaps for each newly-observed marker. Fetching runs on the
+      // relay scope so the text reply isn't blocked behind a network call.
+      for (marker in markers) {
+        val stateEntry = statesDesc?.states?.get(marker.state)
+        if (stateEntry == null) {
+          WearRelayLog.info("chat", "$agentId avatar: unknown state \"${marker.state}\"")
+          continue
+        }
+        WearRelayScope.launch {
+          publishStateAvatar(app, agentId, marker.state, stateEntry)
+        }
+      }
+
       val msg = JSONObject().apply {
         put("agentId", agentId)
         put("seq", seq++)
-        put("text", part.text)
+        put("text", cleanedText)
         put("final", part.isFinal)
         when {
           part.audioAssetRef != null -> {
@@ -308,7 +461,18 @@ class WearRelayService : WearableListenerService() {
         part.audioBase64 != null -> " +b64"
         else -> ""
       }
-      WearRelayLog.info("chat", "$agentId → $kind ${part.text.length}ch$audioTag")
+      WearRelayLog.info("chat", "$agentId → $kind ${cleanedText.length}ch$audioTag")
+
+      // Reset to default state on final so the watch resting pose matches
+      // the static avatar between runs. No-op if the agent isn't states-aware.
+      if (part.isFinal && statesDesc != null) {
+        val defaultEntry = statesDesc.states[statesDesc.default]
+        if (defaultEntry != null) {
+          WearRelayScope.launch {
+            publishStateAvatar(app, agentId, statesDesc.default, defaultEntry)
+          }
+        }
+      }
     }
 
     if (error != null) {
@@ -319,7 +483,95 @@ class WearRelayService : WearableListenerService() {
         put("error", error)
       }.toString())
       WearRelayLog.error("chat", error)
+      // Reset avatar on error/timeout too — otherwise a stalled gateway
+      // leaves the watch on the "thinking" frame forever.
+      if (statesDesc != null) {
+        val defaultEntry = statesDesc.states[statesDesc.default]
+        if (defaultEntry != null) {
+          WearRelayScope.launch {
+            publishStateAvatar(app, agentId, statesDesc.default, defaultEntry)
+          }
+        }
+      }
     }
+  }
+
+  /**
+   * Prepend the sidecar-supplied avatar-states instruction to the user's first
+   * message of the session. Framed so the model reads it as explicit context
+   * rather than something the user typed. One-time per agent per phone process
+   * — subsequent turns rely on the gateway's conversation history to keep the
+   * briefing in context.
+   */
+  private fun buildInstructedMessage(
+    statesDesc: AvatarStatesDescriptor,
+    userText: String,
+  ): String {
+    val buf = StringBuilder()
+    buf.append(
+      "[Wear client rendering context — do not mention this block in your reply. " +
+          "These are display-only instructions for driving the watch's avatar.]\n",
+    )
+    buf.append(statesDesc.instruction.trim())
+    buf.append("\n\n")
+    buf.append(userText)
+    return buf.toString()
+  }
+
+  /**
+   * Fetch the bytes for a named avatar state and republish them at the agent's
+   * DataClient path, overwriting the prior frame. The watch is already
+   * listening for changes at `/openclaw/avatars/<agentId>` so the swap happens
+   * automatically on its side.
+   *
+   * Results are cached in-memory so a repeat of the same state within a
+   * process lifetime is instant (no re-fetch, no re-publish of identical
+   * bytes to DataClient — the PutDataRequest already de-duplicates but we
+   * skip the network hop anyway).
+   */
+  private suspend fun publishStateAvatar(
+    app: NodeApp,
+    agentId: String,
+    stateName: String,
+    stateEntry: AvatarStateEntry,
+  ) {
+    val cached = AvatarStatesStore.cachedBytes(agentId, stateName)
+    val (bytes, mime) = if (cached != null) {
+      cached.bytes to cached.mime
+    } else {
+      val dataPlane = app.peekRuntime()?.wearRelayDataPlane()
+      val token = app.peekRuntime()?.wearRelayAuthToken()
+      val fetched = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val ref = stateEntry.file
+        when {
+          ref.startsWith("data:") -> null
+          ref.startsWith("file://") || ref.startsWith("/") -> localPathToBytes(ref)
+          ref.startsWith("http://") || ref.startsWith("https://") -> fetchUrlAsBytes(ref)
+          // Relative path — resolve against the gateway's data-plane base URL
+          // the same way the legacy avatar flow does. Covers the native-deploy
+          // case where the gateway emits raw config values for state files and
+          // clients are expected to prefix with <publicBaseUrl>/assets/.
+          dataPlane != null -> buildDataPlaneAssetUrl(dataPlane, token, ref)
+            ?.let { fetchUrlAsBytes(it) }
+          else -> null
+        }
+      }
+      if (fetched == null) {
+        WearRelayLog.warn("chat", "$agentId avatar($stateName): fetch failed (${stateEntry.file.take(40)})")
+        return
+      }
+      AvatarStatesStore.putCachedBytes(
+        agentId,
+        stateName,
+        AvatarStatesStore.CachedAvatar(fetched.first, fetched.second),
+      )
+      fetched
+    }
+    val published = putAvatarAsset(app, agentId, bytes, mime)
+    WearRelayLog.info(
+      "chat",
+      "$agentId avatar($stateName): ${if (published) "swap" else "swap failed"}",
+    )
   }
 
   private suspend fun reply(app: NodeApp, nodeId: String, path: String, data: String) {

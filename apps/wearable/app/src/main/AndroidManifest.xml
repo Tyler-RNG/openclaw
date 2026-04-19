@@ -1,10 +1,12 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature android:name="android.hardware.type.watch" />
 
@@ -36,6 +38,20 @@
             android:name=".WearForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Receives chat replies from the phone when the main activity is
+             not foregrounded and posts a Wear notification. Tapping opens
+             the dial. Intent filter is scoped so other message paths don't
+             wake this service. -->
+        <service
+            android:name=".WearReplyNotifier"
+            android:exported="true"
+            tools:ignore="ExportedService">
+            <intent-filter>
+                <action android:name="com.google.android.gms.wearable.MESSAGE_RECEIVED" />
+                <data android:scheme="wear" android:host="*" android:pathPrefix="/openclaw/chat/reply" />
+            </intent-filter>
+        </service>
 
     </application>
 </manifest>

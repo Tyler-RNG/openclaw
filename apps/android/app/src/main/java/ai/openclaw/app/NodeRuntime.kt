@@ -1153,6 +1153,15 @@ class NodeRuntime(
     agentId: String,
     userText: String,
     onPart: suspend (WearChatPart) -> Unit,
+    /**
+     * Invoked as the growing (not yet stable) last assistant block appends
+     * new text. Carries the delta since the previous invocation. Used by the
+     * Wear relay to parse `[avatar:state]` markers *inside* the growing block
+     * and dispatch gif swaps before the block finalizes — otherwise markers
+     * land 1–2s after the audio finishes. Optional; callers that only care
+     * about finalized blocks can omit.
+     */
+    onGrowingDelta: (suspend (String) -> Unit)? = null,
   ): String? {
     if (!operatorConnected) return "Operator session not connected"
     return coroutineScope {
@@ -1200,6 +1209,12 @@ class NodeRuntime(
         val stabilityThreshold = 3
         var sawAnyBlock = false
 
+        // Mid-stream delta tracking for the growing (not-yet-stable) last
+        // text block. Per-block-index so we reset baseline when the model
+        // switches from text → tool → text (a new "last block" appears).
+        var lastGrowingBlockIndex: Int = -1
+        var lastGrowingText: String = ""
+
         var consecutivePollErrors = 0
         repeat(maxPolls) {
           kotlinx.coroutines.delay(pollIntervalMs)
@@ -1236,6 +1251,37 @@ class NodeRuntime(
             }
           }
 
+          // Mid-stream delta: feed the growing last-block's new text to the
+          // optional handler so the Wear relay can extract `[avatar:state]`
+          // markers before finalization. Without this, the poll loop holds
+          // the growing block until it's stable for 3 polls (≥1.2s) and
+          // avatar swaps lag the spoken reply noticeably.
+          if (onGrowingDelta != null && blocks.isNotEmpty()) {
+            val lastIdx = blocks.size - 1
+            val lastBlock = blocks[lastIdx]
+            val baseline = if (lastIdx == lastGrowingBlockIndex) lastGrowingText else ""
+            when {
+              lastBlock == baseline -> Unit
+              lastBlock.length > baseline.length && lastBlock.startsWith(baseline) -> {
+                val delta = lastBlock.substring(baseline.length)
+                onGrowingDelta(delta)
+                lastGrowingBlockIndex = lastIdx
+                lastGrowingText = lastBlock
+              }
+              else -> {
+                // Model rewrote the tail or we're seeing a different block
+                // than before — feed the whole current text as fresh delta.
+                // The parser is idempotent per-marker via the caller's
+                // markersSeen set, so this is safe.
+                if (lastBlock.isNotEmpty()) {
+                  onGrowingDelta(lastBlock)
+                }
+                lastGrowingBlockIndex = lastIdx
+                lastGrowingText = lastBlock
+              }
+            }
+          }
+
           if (signature == lastSignature) {
             stableCount++
           } else {
@@ -1262,6 +1308,25 @@ class NodeRuntime(
             val finalText = blocks.lastOrNull()?.takeIf { it.isNotBlank() }
             if (finalText != null) {
               WearRelayLog.info("chat", "final: \"${finalText.take(80)}\"")
+              // TODO(tts-streaming): `wearRelayTalkSpeak` waits for the full
+              // audio blob from the gateway's /stream/tts, so first-sound
+              // latency on the watch is ~2s. Replace with a chunked producer:
+              //   1. Open HttpURLConnection to ${dataPlane.baseUrl}/stream/tts
+              //      with Transfer-Encoding: chunked; read InputStream in
+              //      8–16KB frames as they arrive.
+              //   2. For each frame, publish to DataClient path
+              //      `/openclaw/tts/<turnId>/<seq>` (use WearAsset.DATA_TTS_PATH)
+              //      with fields {seq, bytes, mime}. Mark last frame {seq,
+              //      final:true} and/or publish `/openclaw/tts/<turnId>/end`.
+              //   3. Watch subscribes to `/openclaw/tts/<turnId>/*`, orders
+              //      frames by seq, feeds to an ExoPlayer streaming source
+              //      (ConcatenatingMediaSource or a custom DataSource with a
+              //      ChunkingBuffer). Start playback on first frame.
+              //   4. Keep the current `audioBase64`/`audioAssetRef` fallback
+              //      for when streaming setup fails (network glitch, watch
+              //      ExoPlayer init error) so no regression.
+              // Expected latency improvement: ~2s → ~400ms time-to-first-audio.
+              // See proposal in commit 0a59c11098 session notes.
               val audio = wearRelayTalkSpeak(finalText, agentId)
               onPart(WearChatPart(
                 text = finalText,

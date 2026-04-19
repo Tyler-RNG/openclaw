@@ -472,7 +472,30 @@ class WearRelayService : WearableListenerService() {
     }
 
     var seq = 0
-    val error = runtime.wearRelayChatStream(agentId, textForGateway) { part ->
+
+    // Per-turn marker plumbing. The growing-text parser is stateful (buffers
+    // partial marker lines across poll deltas). `markersDispatched` de-dupes
+    // so the final-part's one-shot re-parse can't double-fire swaps we've
+    // already dispatched mid-stream.
+    val growingMarkerParser = if (statesDesc != null) AvatarMarkerParser() else null
+    val markersDispatched = mutableSetOf<String>()
+    val dispatchMarkerIfNew: (String) -> Unit = dispatch@{ stateName ->
+      val desc = statesDesc ?: return@dispatch
+      if (!markersDispatched.add(stateName)) return@dispatch
+      val stateEntry = desc.states[stateName]
+      if (stateEntry == null) {
+        WearRelayLog.info("chat", "$agentId avatar: unknown state \"$stateName\"")
+        return@dispatch
+      }
+      WearRelayScope.launch {
+        publishStateAvatar(app, agentId, stateName, stateEntry)
+      }
+    }
+
+    val error = runtime.wearRelayChatStream(
+      agentId,
+      textForGateway,
+      onPart = { part ->
       val (cleanedText, markers) = if (statesDesc != null) {
         val parsed = parseAvatarMarkers(part.text)
         parsed.cleanedText to parsed.markers
@@ -480,17 +503,10 @@ class WearRelayService : WearableListenerService() {
         part.text to emptyList()
       }
 
-      // Fire GIF swaps for each newly-observed marker. Fetching runs on the
-      // relay scope so the text reply isn't blocked behind a network call.
+      // Fire GIF swaps for each newly-observed marker (de-duped so markers
+      // already seen mid-stream via onGrowingDelta don't re-dispatch).
       for (marker in markers) {
-        val stateEntry = statesDesc?.states?.get(marker.state)
-        if (stateEntry == null) {
-          WearRelayLog.info("chat", "$agentId avatar: unknown state \"${marker.state}\"")
-          continue
-        }
-        WearRelayScope.launch {
-          publishStateAvatar(app, agentId, marker.state, stateEntry)
-        }
+        dispatchMarkerIfNew(marker.state)
       }
 
       val msg = JSONObject().apply {
@@ -533,7 +549,16 @@ class WearRelayService : WearableListenerService() {
           }
         }
       }
-    }
+    },
+    onGrowingDelta = { delta ->
+      val parsed = growingMarkerParser?.push(delta)
+      if (parsed != null) {
+        for (marker in parsed.markers) {
+          dispatchMarkerIfNew(marker.state)
+        }
+      }
+    },
+    )
 
     if (error != null) {
       reply(app, nodeId, PATH_CHAT_REPLY, JSONObject().apply {

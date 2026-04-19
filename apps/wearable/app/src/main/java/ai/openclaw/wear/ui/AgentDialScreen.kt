@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.sp
 import androidx.wear.compose.material.Text
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
+import coil3.request.crossfade
 import coil3.gif.AnimatedImageDecoder
 import coil3.ImageLoader
 import ai.openclaw.wear.PhoneBridge
@@ -283,28 +284,49 @@ fun AgentDialScreen(viewModel: WearViewModel) {
                     else -> null
                 }
                 if (imageData != null) {
-                    AsyncImage(
-                        model = ImageRequest.Builder(context)
-                            .data(imageData)
-                            .memoryCacheKey("avatar:${agent.id}:$agentVersion")
-                            .build(),
-                        imageLoader = imageLoader,
-                        contentDescription = agent.name,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clip(RoundedCornerShape(32.dp)),
-                    )
+                    val isThinking = isCurrentPage && voiceState == VoiceState.Thinking
+                    val thinkingBytes = (imageData as? ByteArray)?.takeIf { isThinking }
+                    if (thinkingBytes != null) {
+                        // Thinking state: render via AnimatedImageDrawable with
+                        // repeatCount=0 so the gif plays once end-to-end then
+                        // freezes on the final frame instead of looping under
+                        // the progress indicator. Re-decodes only when the
+                        // bytes identity changes (state swap) — a stable
+                        // "thinking" run reuses the same drawable without
+                        // restarting the animation.
+                        OneShotGif(
+                            bytes = thinkingBytes,
+                            contentDescription = agent.name,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(32.dp)),
+                        )
+                    } else {
+                        AsyncImage(
+                            model = ImageRequest.Builder(context)
+                                .data(imageData)
+                                // Disable Coil's default fade transition. With
+                                // per-agent state swaps arriving in quick
+                                // succession (thinking → happy → neutral), the
+                                // crossfade momentarily draws the outgoing
+                                // frame on top of the incoming one, which
+                                // reads as stacked/ghosted avatars on the dial.
+                                // Instant swap restores a clean single-image
+                                // paint per state.
+                                .crossfade(false)
+                                .memoryCacheKey("avatar:${agent.id}:$agentVersion")
+                                .build(),
+                            imageLoader = imageLoader,
+                            contentDescription = agent.name,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(32.dp)),
+                        )
+                    }
                     // Thinking overlay: small spinner at the top of the avatar
                     // box to cue "waiting on reply" without occluding the GIF.
-                    // TODO(wear-thinking-pause): Coil 3 AnimatedImageDecoder
-                    // doesn't expose a simple repeat-count knob, so the
-                    // thinking.gif keeps looping underneath for now. To get
-                    // "play once, pause on last frame" we'd need to decode
-                    // via AnimatedImageDrawable directly (setRepeatCount(0))
-                    // and render through rememberDrawablePainter — planned
-                    // follow-up, not worth the churn this pass.
-                    if (isCurrentPage && voiceState == VoiceState.Thinking) {
+                    if (isThinking) {
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()

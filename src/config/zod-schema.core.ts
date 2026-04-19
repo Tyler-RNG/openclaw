@@ -392,12 +392,86 @@ const AvatarStatesConfigSchema = z
   })
   .strict();
 
+// Sprite-frame + atlas avatar formats. Canonical spec lives in
+// docs/avatars/formats.md — update that doc whenever these schemas change.
+const AvatarLoopModeSchema = z.union([
+  z.literal("infinite"),
+  z.literal("once"),
+  z.literal("ping-pong"),
+]);
+
+const AvatarSpriteSequenceSchema = z
+  .object({
+    count: z.number().int().positive(),
+    fps: z.number().positive().optional(),
+    loop: AvatarLoopModeSchema.optional(),
+    holdLastFrame: z.boolean().optional(),
+    iterations: z.number().int().positive().optional(),
+  })
+  .strict();
+
+// A sprite state is either a single sequence (with optional description) or
+// a phased state with intro/loop/outro. We express this as a union so
+// validators can point at the specific invalid arm on failure.
+const AvatarSpriteStateSchema = z.union([
+  AvatarSpriteSequenceSchema.extend({
+    description: z.string().optional(),
+  }).strict(),
+  z
+    .object({
+      intro: AvatarSpriteSequenceSchema.optional(),
+      loop: AvatarSpriteSequenceSchema,
+      outro: AvatarSpriteSequenceSchema.optional(),
+      description: z.string().optional(),
+    })
+    .strict(),
+]);
+
+const AvatarTransitionSchema = z.union([
+  z.string(),
+  z
+    .object({
+      blend: z.literal("crossfade"),
+      ms: z.number().int().positive(),
+    })
+    .strict(),
+]);
+
+const AvatarSpritesConfigSchema = z
+  .object({
+    kind: z.literal("sprites"),
+    default: z.string(),
+    basePath: z.string(),
+    format: z.union([z.literal("webp"), z.literal("png"), z.literal("jpg")]).optional(),
+    states: z.record(z.string(), AvatarSpriteStateSchema),
+    transitions: z.record(z.string(), AvatarTransitionSchema).optional(),
+    instruction: z.string().optional(),
+  })
+  .strict();
+
+const AvatarAtlasConfigSchema = z
+  .object({
+    kind: z.literal("atlas"),
+    default: z.string(),
+    manifest: z.string(),
+    descriptions: z.record(z.string(), z.string()).optional(),
+    instruction: z.string().optional(),
+  })
+  .strict();
+
 export const IdentitySchema = z
   .object({
     name: z.string().optional(),
     theme: z.string().optional(),
     emoji: z.string().optional(),
-    avatar: z.union([z.string(), AvatarStatesConfigSchema]).optional(),
+    avatar: z
+      .union([
+        z.string(),
+        AvatarStatesConfigSchema,
+        AvatarSpritesConfigSchema,
+        AvatarAtlasConfigSchema,
+      ])
+      .optional(),
   })
   .strict()
   .optional();

@@ -100,6 +100,7 @@
 - `docs/AGENTS.md` owns Mintlify docs, docs links, and docs i18n rules.
 - `ui/AGENTS.md` owns Control UI i18n and generated locale rules.
 - `scripts/AGENTS.md` owns script-runner, local-check lock, and test/lint wrapper rules.
+- `docs/avatars/formats.md` is the canonical artist/integrator spec for avatar formats (`kind: "states"` / `"sprites"` / `"atlas"`). Update it whenever `src/config/types.agents.ts`, `src/config/zod-schema.ts` avatar shapes, the phone `rewriteAvatars` prefetch branches, the watch `AvatarRuntime`, or the `scripts/avatars/*` authoring tools change — it's the source of truth artists author against.
 
 ## exe.dev VM ops (general)
 

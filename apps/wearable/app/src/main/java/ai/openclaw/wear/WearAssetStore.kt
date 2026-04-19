@@ -8,6 +8,7 @@ import com.google.android.gms.wearable.DataEvent
 import com.google.android.gms.wearable.DataItem
 import com.google.android.gms.wearable.DataMapItem
 import com.google.android.gms.wearable.Wearable
+import ai.openclaw.wear.protocol.WearAsset
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -60,7 +61,7 @@ class WearAssetStore(private val context: Context) {
         // Pull any items that already exist on the Data Layer when we start up.
         scope.launch {
             try {
-                val avatarUri = Uri.parse("wear://*/openclaw/avatars/")
+                val avatarUri = Uri.parse("wear://*${WearAsset.DATA_AVATAR_PATH}/")
                 dataClient.getDataItems(avatarUri, DataClient.FILTER_PREFIX).await()
                     .forEach { item ->
                         val p = item.uri.path ?: return@forEach
@@ -102,14 +103,14 @@ class WearAssetStore(private val context: Context) {
                 val fd = dataClient.getFdForAsset(asset).await()
                 val bytes = fd.inputStream.use { it.readBytes() }
                 when {
-                    path.startsWith("/openclaw/avatars/") -> {
-                        val id = path.removePrefix("/openclaw/avatars/")
+                    path.startsWith("${WearAsset.DATA_AVATAR_PATH}/") -> {
+                        val id = path.removePrefix("${WearAsset.DATA_AVATAR_PATH}/")
                         _avatars.update { it + (id to bytes) }
                         _avatarVersion.update { it + 1 }
                         Log.d(TAG, "avatar $id loaded (${bytes.size}B)")
                     }
-                    path.startsWith("/openclaw/tts/") -> {
-                        val id = path.removePrefix("/openclaw/tts/")
+                    path.startsWith("${WearAsset.DATA_TTS_PATH}/") -> {
+                        val id = path.removePrefix("${WearAsset.DATA_TTS_PATH}/")
                         _tts.update { it + (id to bytes) }
                         Log.d(TAG, "tts $id loaded (${bytes.size}B)")
                     }
@@ -122,12 +123,12 @@ class WearAssetStore(private val context: Context) {
 
     private fun handleDeleted(path: String) {
         when {
-            path.startsWith("/openclaw/avatars/") -> {
-                val id = path.removePrefix("/openclaw/avatars/")
+            path.startsWith("${WearAsset.DATA_AVATAR_PATH}/") -> {
+                val id = path.removePrefix("${WearAsset.DATA_AVATAR_PATH}/")
                 _avatars.update { it - id }
             }
-            path.startsWith("/openclaw/tts/") -> {
-                val id = path.removePrefix("/openclaw/tts/")
+            path.startsWith("${WearAsset.DATA_TTS_PATH}/") -> {
+                val id = path.removePrefix("${WearAsset.DATA_TTS_PATH}/")
                 _tts.update { it - id }
             }
         }

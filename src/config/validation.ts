@@ -357,6 +357,48 @@ function extractBindingsSpecificUnionIssue(
   return { path: fullPath, message: subMessage };
 }
 
+/**
+ * Fallback union-error extractor for any `invalid_union` issue that doesn't
+ * have a more specific handler. Walks each arm's issue list and picks the
+ * one with the deepest path — that's almost always the most actionable
+ * diagnostic ("streamTts.apiKey.source: expected 'env'") instead of zod's
+ * generic top-level "Invalid input".
+ */
+function extractBestUnionArmIssue(
+  record: UnknownIssueRecord,
+  parentPath: string,
+): ConfigValidationIssue | null {
+  if (!Array.isArray(record.errors)) {
+    return null;
+  }
+  let best: { issue: UnknownIssueRecord; pathLen: number } | null = null;
+  for (const errGroup of record.errors) {
+    if (!Array.isArray(errGroup)) {
+      continue;
+    }
+    for (const issue of errGroup) {
+      const issueRecord = toIssueRecord(issue);
+      if (!issueRecord) {
+        continue;
+      }
+      const pathLen = toConfigPathSegments(issueRecord.path).length;
+      if (!best || pathLen > best.pathLen) {
+        best = { issue: issueRecord, pathLen };
+      }
+    }
+  }
+  if (!best || best.pathLen === 0) {
+    return null;
+  }
+  const subPath = formatConfigPath(toConfigPathSegments(best.issue.path));
+  const fullPath = parentPath && subPath ? `${parentPath}.${subPath}` : parentPath || subPath;
+  const message =
+    typeof best.issue.message === "string" && best.issue.message.length > 0
+      ? best.issue.message
+      : "Invalid input";
+  return { path: fullPath, message };
+}
+
 function isObjectSecretRefCandidate(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return false;
@@ -464,6 +506,15 @@ function mapZodIssueToConfigIssue(issue: unknown): ConfigValidationIssue {
     const betterIssue = extractBindingsSpecificUnionIssue(record, path);
     if (betterIssue) {
       return betterIssue;
+    }
+    // Generic fallback: zod's top-level "Invalid input" for union failures
+    // hides the actual per-arm reason. SecretRef-shaped mistakes (e.g.
+    // `{kind, name}` when the schema wants `{source, provider, id}`) are
+    // especially painful to diagnose without this. Surface the most specific
+    // arm issue so the user sees exactly which field is wrong.
+    const armIssue = extractBestUnionArmIssue(record, path);
+    if (armIssue) {
+      return armIssue;
     }
   }
 

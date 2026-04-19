@@ -2,19 +2,13 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { loadConfig } from "../config/config.js";
 import type { GatewayHttpStreamTtsConfig } from "../config/types.gateway.js";
 import { resolveSecretInputString } from "../secrets/resolve-secret-input-string.js";
-import {
-  authorizeHttpGatewayConnect,
-  type ResolvedGatewayAuth,
-} from "./auth.js";
 import type { AuthRateLimiter } from "./auth-rate-limit.js";
-import {
-  sendGatewayAuthFailure,
-  sendJson,
-  sendMethodNotAllowed,
-} from "./http-common.js";
+import { authorizeHttpGatewayConnect, type ResolvedGatewayAuth } from "./auth.js";
+import { sendGatewayAuthFailure, sendJson, sendMethodNotAllowed } from "./http-common.js";
 import { getBearerToken, resolveHttpBrowserOriginPolicy } from "./http-utils.js";
 
-const STREAM_TTS_PATHS: ReadonlySet<string> = new Set(["/stream/tts", "/tts"]);
+export { isStreamTtsHttpPath } from "./server/http-path-matchers.js";
+import { isStreamTtsHttpPath } from "./server/http-path-matchers.js";
 
 export type StreamTtsHttpOptions = {
   auth: ResolvedGatewayAuth;
@@ -34,10 +28,6 @@ export type StreamTtsHttpOptions = {
    */
   fetchImpl?: typeof fetch;
 };
-
-export function isStreamTtsHttpPath(pathname: string): boolean {
-  return STREAM_TTS_PATHS.has(pathname);
-}
 
 function resolveStreamTtsAuthToken(req: IncomingMessage): string | undefined {
   const bearer = getBearerToken(req);
@@ -79,9 +69,7 @@ async function authorizeStreamTtsRequest(params: {
   return true;
 }
 
-async function resolveProviderApiKey(
-  opts: StreamTtsHttpOptions,
-): Promise<string | undefined> {
+async function resolveProviderApiKey(opts: StreamTtsHttpOptions): Promise<string | undefined> {
   if (opts.resolveApiKey) {
     return opts.resolveApiKey();
   }

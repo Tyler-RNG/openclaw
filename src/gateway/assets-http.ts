@@ -31,9 +31,8 @@ export type AssetsHttpOptions = {
   rateLimiter?: AuthRateLimiter;
 };
 
-export function isAssetsHttpPath(pathname: string): boolean {
-  return pathname === "/openclaw-assets" || pathname.startsWith("/openclaw-assets/");
-}
+export { isAssetsHttpPath } from "./server/http-path-matchers.js";
+import { isAssetsHttpPath } from "./server/http-path-matchers.js";
 
 function resolveAssetsDir(cfg: GatewayHttpAssetsConfig): string {
   const raw =

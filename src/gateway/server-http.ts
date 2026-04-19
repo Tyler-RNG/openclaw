@@ -61,6 +61,11 @@ import {
 import { resolveRequestClientIp } from "./net.js";
 import { DEDUPE_MAX, DEDUPE_TTL_MS } from "./server-constants.js";
 import { authorizeCanvasRequest, isCanvasPath } from "./server/http-auth.js";
+import {
+  FEATURE_FLAGGED_API_PATHS,
+  isAssetsHttpPath,
+  isStreamTtsHttpPath,
+} from "./server/http-path-matchers.js";
 import { resolvePluginRouteRuntimeOperatorScopes } from "./server/plugin-route-runtime-scopes.js";
 import {
   isProtectedPluginRoutePathFromContext,
@@ -275,14 +280,6 @@ function isSessionKillPath(pathname: string): boolean {
 
 function isSessionHistoryPath(pathname: string): boolean {
   return /^\/sessions\/[^/]+\/history$/.test(pathname);
-}
-
-function isAssetsPath(pathname: string): boolean {
-  return pathname === "/openclaw-assets" || pathname.startsWith("/openclaw-assets/");
-}
-
-function isStreamTtsPath(pathname: string): boolean {
-  return pathname === "/stream/tts" || pathname === "/tts";
 }
 
 function isA2uiPath(pathname: string): boolean {
@@ -1027,7 +1024,7 @@ export function createGatewayHttpServer(opts: {
             }),
         });
       }
-      if (assetsHttpEnabled && isAssetsPath(requestPath)) {
+      if (assetsHttpEnabled && isAssetsHttpPath(requestPath)) {
         requestStages.push({
           name: "assets",
           run: async () =>
@@ -1040,7 +1037,7 @@ export function createGatewayHttpServer(opts: {
             }),
         });
       }
-      if (streamTtsHttpEnabled && isStreamTtsPath(requestPath)) {
+      if (streamTtsHttpEnabled && isStreamTtsHttpPath(requestPath)) {
         requestStages.push({
           name: "stream-tts",
           run: async () =>
@@ -1112,6 +1109,39 @@ export function createGatewayHttpServer(opts: {
           run: () => canvasHost.handleHttpRequest(req, res),
         });
       }
+      // Feature-flagged API endpoints: if the path is a known API but its
+      // flag is off, respond with a clear 503 JSON before falling through to
+      // plugin routes and the Control UI SPA. Without this, a disabled
+      // endpoint (e.g. `/stream/tts` with `enabled: false`) would hit the
+      // SPA catch-all and return the control-UI `index.html` as `text/html`,
+      // which clients try to parse as audio/json and fail silently.
+      for (const flagged of FEATURE_FLAGGED_API_PATHS) {
+        if (!flagged.matches(requestPath)) {
+          continue;
+        }
+        const enabled =
+          (flagged.configPath === "gateway.http.endpoints.assets.enabled" && assetsHttpEnabled) ||
+          (flagged.configPath === "gateway.http.endpoints.streamTts.enabled" &&
+            streamTtsHttpEnabled);
+        if (enabled) {
+          continue;
+        }
+        const configPath = flagged.configPath;
+        requestStages.push({
+          name: `${flagged.configPath}-disabled`,
+          run: () => {
+            sendJson(res, 503, {
+              error: {
+                message: `Endpoint is not enabled. Set ${configPath}=true in openclaw.json.`,
+                type: "endpoint_disabled",
+                configPath,
+              },
+            });
+            return true;
+          },
+        });
+      }
+
       // Plugin routes run before the Control UI SPA catch-all so explicitly
       // registered plugin endpoints stay reachable. Core built-in gateway
       // routes above still keep precedence on overlapping paths.

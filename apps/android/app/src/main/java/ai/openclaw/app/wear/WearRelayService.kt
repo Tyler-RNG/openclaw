@@ -6,6 +6,7 @@ import com.google.android.gms.wearable.Wearable
 import com.google.android.gms.wearable.WearableListenerService
 import ai.openclaw.app.NodeApp
 import ai.openclaw.app.NodeRuntime
+import ai.openclaw.app.protocol.WearAsset
 import com.google.android.gms.wearable.Asset
 import com.google.android.gms.wearable.PutDataMapRequest
 import kotlinx.coroutines.CoroutineScope
@@ -127,7 +128,7 @@ class WearRelayService : WearableListenerService() {
             if (fetched != null) {
               val (bytes, mime) = fetched
               if (putAvatarAsset(app, agentId, bytes, mime)) {
-                identity.put(key, "wear-asset:avatar:$agentId")
+                identity.put(key, WearAsset.buildAvatarRef(agentId))
                 legacyPublished++
               } else {
                 legacyFailed++
@@ -163,7 +164,7 @@ class WearRelayService : WearableListenerService() {
                   AvatarStatesStore.CachedAvatar(bytes, mime),
                 )
                 if (putAvatarAsset(app, agentId, bytes, mime)) {
-                  identity.put("avatarUrl", "wear-asset:avatar:$agentId")
+                  identity.put("avatarUrl", WearAsset.buildAvatarRef(agentId))
                   statePublished++
                   WearRelayLog.info(
                     "agents",
@@ -314,7 +315,7 @@ class WearRelayService : WearableListenerService() {
   private suspend fun putAvatarAsset(app: NodeApp, agentId: String, bytes: ByteArray, mime: String): Boolean {
     return try {
       val asset = Asset.createFromBytes(bytes)
-      val request = PutDataMapRequest.create("/openclaw/avatars/$agentId").apply {
+      val request = PutDataMapRequest.create(WearAsset.avatarDataPath(agentId)).apply {
         dataMap.putAsset("data", asset)
         dataMap.putString("mime", mime)
         dataMap.putLong("ts", System.currentTimeMillis())

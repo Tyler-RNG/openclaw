@@ -53,6 +53,7 @@ import coil3.ImageLoader
 import ai.openclaw.wear.PhoneBridge
 import ai.openclaw.wear.VoiceState
 import ai.openclaw.wear.WearViewModel
+import ai.openclaw.wear.protocol.WearAsset
 import android.util.Base64
 import android.util.Log
 import androidx.compose.runtime.LaunchedEffect
@@ -85,8 +86,8 @@ private fun parseThemeColor(theme: String?): Color? {
 private fun resolveAvatarModel(raw: String?, assetBytes: Map<String, ByteArray>? = null): Any? {
     if (raw.isNullOrBlank()) return null
     return when {
-        raw.startsWith("wear-asset:avatar:") -> {
-            val id = raw.removePrefix("wear-asset:avatar:")
+        raw.startsWith(WearAsset.AVATAR_REF_PREFIX) -> {
+            val id = WearAsset.parseAvatarRef(raw) ?: return null
             assetBytes?.get(id)
         }
         raw.startsWith("http://") || raw.startsWith("https://") -> raw

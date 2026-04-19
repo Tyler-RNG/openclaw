@@ -321,22 +321,81 @@ Frame keys follow `"<state>/<NN>"` for single-sequence states or `"<state>.<phas
 3. **Pack when shipping** — run `pnpm avatar:pack <agentId>` to generate the atlas + manifest. Script writes `<agentId>.atlas.webp` and `<agentId>.atlas.json` sibling to the frames dir.
 4. **Switch config** to `kind: "atlas"` pointing at the generated manifest. Delete or archive the `frames/` dir to shrink the runtime install (or keep it as the editable source-of-truth; the atlas is what ships).
 
-## Migration from existing GIFs
+## Tooling reference
 
-If an agent already has `neutral.gif / thinking.gif / …` under `kind: "states"`:
+Both scripts read from / write to `~/.openclaw/assets/avatars/<agentId>/` by default. Override with `--assets-root <dir>` when working with a non-standard layout.
+
+### `pnpm avatar:extract <agentId>` — GIF → frames
+
+Splits an agent's existing per-state GIFs into numbered WebP frame sequences (Format 2). Also emits a starter `kind: "sprites"` config block.
 
 ```bash
-# One-time extraction; emits frames/<state>/NN.webp + suggested config block
-pnpm avatar:extract <agentId>
+# Default — extract all <agentId>/<state>.gif files found on disk
+pnpm avatar:extract ginger
+
+# Force an fps override instead of detecting from GIF frame delays
+pnpm avatar:extract ginger --fps 24
+
+# Dry-run: print the plan without writing anything
+pnpm avatar:extract ginger --dry-run
+
+# Emit PNG instead of WebP (rare; WebP recommended)
+pnpm avatar:extract ginger --format png
 ```
 
-The script:
+Outputs:
 
-1. `ffmpeg -i <state>.gif -vsync 0 frames/<state>/%02d.webp` per state
-2. Auto-detects fps from the GIF's frame delays (rounds to nearest integer)
-3. Writes a starter config block in `frames/<agentId>.sprites-config.jsonc` with sensible defaults (`loop: "infinite"`, `fps` from the detected rate) — paste into `openclaw.json` to finish migration
+- `<agentId>/frames/<state>/NN.webp` per state (zero-padded to 2 digits; 3 digits when frame count ≥ 100)
+- `<agentId>/<agentId>.sprites-config.jsonc` — starter config you paste into `openclaw.json` at `identity.avatar`. Defaults: `neutral/happy/sad/angry/curious` loop infinite; `thinking` uses `loop: "once" + holdLastFrame: true` so the wait reads naturally. Hand-edit freely before pasting.
 
-After `extract` you're in Format 2. After `pack` you're in Format 3.
+Detects fps per GIF from its encoded frame delays (`ffprobe avg_frame_rate`), rounded to the nearest integer. Override with `--fps` if you want uniform timing across states.
+
+### `pnpm avatar:pack <agentId>` — frames → atlas
+
+Composites every frame under `<agentId>/frames/` into a single WebP atlas image and writes a sibling JSON manifest.
+
+```bash
+# Default — pack every state + phase found, WebP quality 85
+pnpm avatar:pack ginger
+
+# Force a specific grid width (otherwise the script picks ⌈√N⌉ cols)
+pnpm avatar:pack ginger --cols 6
+
+# Tighter quality / smaller file
+pnpm avatar:pack ginger --quality 75
+
+# Source frames are PNG instead of WebP
+pnpm avatar:pack ginger --input-format png
+
+# Dry-run — validate dimensions + print the grid without writing files
+pnpm avatar:pack ginger --dry-run
+```
+
+Outputs:
+
+- `<agentId>/<agentId>.atlas.webp` — every unique frame composited in a grid with transparent background
+- `<agentId>/<agentId>.atlas.json` — manifest: `frames` rect-per-key map, `animations` per-state timing + frame refs, and `transitions` copied from the sibling `<agentId>.sprites-config.jsonc` if present
+
+**Deduplication:** identical frame bytes (detected by SHA-256) share a single atlas slot. A state whose last outro frame equals the first frame of the default state compacts automatically.
+
+**Uniform dimensions:** all frames for a given agent must share width × height. The packer reads the first frame's dimensions and rejects any frame that differs. This is enforced so the runtime's atlas slicer can assume a uniform grid.
+
+## Migration from existing GIFs
+
+```bash
+# 1. Extract GIFs into frames (Format 2) + get a starter config
+pnpm avatar:extract ginger
+# → edit ~/.openclaw/assets/avatars/ginger/ginger.sprites-config.jsonc if you want
+# → paste it into openclaw.json at identity.avatar for the agent
+
+# 2. Pack into an atlas (Format 3) when ready to ship
+pnpm avatar:pack ginger
+# → switch openclaw.json to:
+#   { "kind": "atlas", "default": "neutral",
+#     "manifest": "avatars/ginger/ginger.atlas.json" }
+```
+
+After `extract` you're in Format 2 (sprite frames). After `pack` you're in Format 3 (atlas). The source `frames/` dir can stay on disk as the editable source-of-truth — the runtime only reads the atlas once `kind: "atlas"` is configured.
 
 ## Field reference (all formats)
 

@@ -48,6 +48,24 @@ class WearAssetStore(private val context: Context) {
     private val _avatarVersions = MutableStateFlow<Map<String, Int>>(emptyMap())
     val avatarVersions: StateFlow<Map<String, Int>> = _avatarVersions.asStateFlow()
 
+    // --- Sprite-frames shape (kind: "sprites") ---
+    // Per-agent map of { "<state>[/<phase>]/<NN>" → bytes } assembled from
+    // DataClient items arriving at `/openclaw/avatars/<id>/frames/...`.
+    // Keys match the AvatarRuntime's expected frame-key format so the
+    // SpriteFrameSource can look them up 1:1.
+    private val _spriteFrames = MutableStateFlow<Map<String, Map<String, ByteArray>>>(emptyMap())
+    val spriteFrames: StateFlow<Map<String, Map<String, ByteArray>>> = _spriteFrames.asStateFlow()
+
+    // --- Atlas shape (kind: "atlas") ---
+    // Per-agent atlas image bytes + parsed manifest JSON string. The watch's
+    // AvatarRuntime parses the manifest to build AnimationDefinitions + the
+    // frame rect map, then slices the decoded atlas bitmap per tick.
+    private val _atlasImages = MutableStateFlow<Map<String, ByteArray>>(emptyMap())
+    val atlasImages: StateFlow<Map<String, ByteArray>> = _atlasImages.asStateFlow()
+
+    private val _atlasManifests = MutableStateFlow<Map<String, String>>(emptyMap())
+    val atlasManifests: StateFlow<Map<String, String>> = _atlasManifests.asStateFlow()
+
     private val _tts = MutableStateFlow<Map<String, ByteArray>>(emptyMap())
     val tts: StateFlow<Map<String, ByteArray>> = _tts.asStateFlow()
 
@@ -108,6 +126,38 @@ class WearAssetStore(private val context: Context) {
                 val fd = dataClient.getFdForAsset(asset).await()
                 val bytes = fd.inputStream.use { it.readBytes() }
                 when {
+                    // Sprite-frame path:
+                    //   /openclaw/avatars/<agentId>/frames/<state>/<NN>
+                    //   /openclaw/avatars/<agentId>/frames/<state>/<phase>/<NN>
+                    path.matches(Regex("${Regex.escape(WearAsset.DATA_AVATAR_PATH)}/[^/]+/frames/.+")) -> {
+                        val rest = path.removePrefix("${WearAsset.DATA_AVATAR_PATH}/")
+                        val firstSlash = rest.indexOf('/')
+                        val id = rest.substring(0, firstSlash)
+                        val afterFrames = rest.substring(firstSlash + "/frames/".length)
+                        val frameKey = spriteFrameKeyFromPath(afterFrames)
+                        _spriteFrames.update { current ->
+                            val per = current[id]?.toMutableMap() ?: mutableMapOf()
+                            per[frameKey] = bytes
+                            current + (id to per)
+                        }
+                        _avatarVersions.update { it + (id to ((it[id] ?: 0) + 1)) }
+                        Log.d(TAG, "sprite $id $frameKey (${bytes.size}B)")
+                    }
+                    // Atlas image path.
+                    path.matches(Regex("${Regex.escape(WearAsset.DATA_AVATAR_PATH)}/[^/]+/atlas/image")) -> {
+                        val id = path.split("/")[3] // /openclaw/avatars/<id>/atlas/image
+                        _atlasImages.update { it + (id to bytes) }
+                        _avatarVersions.update { it + (id to ((it[id] ?: 0) + 1)) }
+                        Log.d(TAG, "atlas image $id (${bytes.size}B)")
+                    }
+                    // Atlas manifest path (JSON text payload).
+                    path.matches(Regex("${Regex.escape(WearAsset.DATA_AVATAR_PATH)}/[^/]+/atlas/manifest")) -> {
+                        val id = path.split("/")[3]
+                        val manifestJson = String(bytes, Charsets.UTF_8)
+                        _atlasManifests.update { it + (id to manifestJson) }
+                        _avatarVersions.update { it + (id to ((it[id] ?: 0) + 1)) }
+                        Log.d(TAG, "atlas manifest $id (${bytes.size}B)")
+                    }
                     path.startsWith("${WearAsset.DATA_AVATAR_PATH}/") -> {
                         val id = path.removePrefix("${WearAsset.DATA_AVATAR_PATH}/")
                         _avatars.update { it + (id to bytes) }
@@ -137,6 +187,22 @@ class WearAssetStore(private val context: Context) {
                 val id = path.removePrefix("${WearAsset.DATA_TTS_PATH}/")
                 _tts.update { it - id }
             }
+        }
+    }
+
+    /**
+     * Convert a sprite-frame DataClient subpath into the AvatarRuntime's
+     * frame-key format. Accepts:
+     *   "neutral/03"             → "neutral/03"
+     *   "thinking/intro/02"      → "thinking.intro/02"
+     * The runtime keys phased states with a dot-separated phase, not a slash.
+     */
+    private fun spriteFrameKeyFromPath(afterFrames: String): String {
+        val parts = afterFrames.split('/')
+        return when (parts.size) {
+            2 -> afterFrames                                  // <state>/<NN>
+            3 -> "${parts[0]}.${parts[1]}/${parts[2]}"        // <state>/<phase>/<NN>
+            else -> afterFrames                               // fall back verbatim
         }
     }
 

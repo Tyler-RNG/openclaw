@@ -56,6 +56,8 @@ import ai.openclaw.wear.PhoneBridge
 import ai.openclaw.wear.VoiceState
 import ai.openclaw.wear.WearViewModel
 import ai.openclaw.wear.protocol.WearAsset
+import ai.openclaw.wear.ui.AtlasAvatar
+import ai.openclaw.wear.ui.SpriteAvatar
 import android.util.Base64
 import android.util.Log
 import androidx.compose.runtime.LaunchedEffect
@@ -145,6 +147,9 @@ fun AgentDialScreen(viewModel: WearViewModel) {
     val pendingMailJump by viewModel.pendingMailJump.collectAsState()
     val avatarAssets by viewModel.avatarAssets.collectAsState()
     val avatarVersions by viewModel.avatarVersions.collectAsState()
+    val spriteFramesByAgent by viewModel.spriteFrames.collectAsState()
+    val atlasImagesByAgent by viewModel.atlasImages.collectAsState()
+    val atlasManifestsByAgent by viewModel.atlasManifests.collectAsState()
 
     // Request focus so rotary events reach this composable
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
@@ -283,81 +288,108 @@ fun AgentDialScreen(viewModel: WearViewModel) {
                     hasDefaultGif -> "android.resource://${context.packageName}/$defaultGifResId"
                     else -> null
                 }
-                if (imageData != null) {
-                    val isThinking = isCurrentPage && voiceState == VoiceState.Thinking
-                    val thinkingBytes = (imageData as? ByteArray)?.takeIf { isThinking }
-                    if (thinkingBytes != null) {
-                        // Thinking state: render via AnimatedImageDrawable with
-                        // repeatCount=0 so the gif plays once end-to-end then
-                        // freezes on the final frame instead of looping under
-                        // the progress indicator. Re-decodes only when the
-                        // bytes identity changes (state swap) — a stable
-                        // "thinking" run reuses the same drawable without
-                        // restarting the animation.
-                        OneShotGif(
-                            bytes = thinkingBytes,
+                val isThinking = isCurrentPage && voiceState == VoiceState.Thinking
+
+                // Sprite / atlas avatars bypass Coil + the GIF path entirely:
+                // bytes are pre-fetched per-frame (or as an atlas image +
+                // manifest), and AvatarRuntime drives playback timing + loop
+                // modes + phased states locally. See docs/avatars/formats.md.
+                //
+                // TODO(wear-avatar-state-signal): state swaps from `[avatar:X]`
+                // markers currently only reach the watch via the legacy
+                // publishStateAvatar byte-push. For sprites/atlas the phone
+                // should instead publish a `{ state: "<name>" }` DataItem at
+                // `/openclaw/avatars/<id>/state` which the watch observes and
+                // pipes into `runtime.requestState(newState)`. Until that
+                // lands, sprite/atlas agents will play only the default-state
+                // loop. Tracked as a follow-up.
+                val refKind = WearAsset.refKind(agent.avatarUrl)
+                val spritesJson = agent.avatarSpritesJson
+                val atlasBytes = atlasImagesByAgent[agent.id]
+                val atlasManifestLive = atlasManifestsByAgent[agent.id]
+                val spriteFrames = spriteFramesByAgent[agent.id].orEmpty()
+
+                when {
+                    refKind == "sprites" && spritesJson != null && spriteFrames.isNotEmpty() -> {
+                        SpriteAvatar(
+                            agentId = agent.id,
+                            descriptorJson = spritesJson,
+                            framesByKey = spriteFrames,
                             contentDescription = agent.name,
                             modifier = Modifier
                                 .fillMaxSize()
                                 .clip(RoundedCornerShape(32.dp)),
                         )
-                    } else {
-                        AsyncImage(
-                            model = ImageRequest.Builder(context)
-                                .data(imageData)
-                                // Disable Coil's default fade transition. With
-                                // per-agent state swaps arriving in quick
-                                // succession (thinking → happy → neutral), the
-                                // crossfade momentarily draws the outgoing
-                                // frame on top of the incoming one, which
-                                // reads as stacked/ghosted avatars on the dial.
-                                // Instant swap restores a clean single-image
-                                // paint per state.
-                                .crossfade(false)
-                                .memoryCacheKey("avatar:${agent.id}:$agentVersion")
-                                .build(),
-                            imageLoader = imageLoader,
-                            contentDescription = agent.name,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clip(RoundedCornerShape(32.dp)),
-                        )
+                        if (isThinking) ThinkingSpinnerOverlay()
                     }
-                    // Thinking overlay: small spinner at the top of the avatar
-                    // box to cue "waiting on reply" without occluding the GIF.
-                    if (isThinking) {
-                        Box(
+                    refKind == "atlas" && atlasBytes != null && atlasManifestLive != null -> {
+                        AtlasAvatar(
+                            agentId = agent.id,
+                            manifestJson = atlasManifestLive,
+                            atlasImageBytes = atlasBytes,
+                            contentDescription = agent.name,
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(top = 8.dp),
-                            contentAlignment = Alignment.TopCenter,
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(22.dp),
-                                strokeWidth = 2.dp,
-                                indicatorColor = Color(0xFFFFAA00),
-                                trackColor = Color.Black.copy(alpha = 0.45f),
+                                .clip(RoundedCornerShape(32.dp)),
+                        )
+                        if (isThinking) ThinkingSpinnerOverlay()
+                    }
+                    imageData != null -> {
+                        val thinkingBytes = (imageData as? ByteArray)?.takeIf { isThinking }
+                        if (thinkingBytes != null) {
+                            // Thinking state: AnimatedImageDrawable with
+                            // repeatCount=0 so the gif plays once end-to-end
+                            // then freezes on the final frame. Re-decodes only
+                            // when bytes identity changes (state swap).
+                            OneShotGif(
+                                bytes = thinkingBytes,
+                                contentDescription = agent.name,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(RoundedCornerShape(32.dp)),
+                            )
+                        } else {
+                            AsyncImage(
+                                model = ImageRequest.Builder(context)
+                                    .data(imageData)
+                                    // Disable Coil's default fade: with per-
+                                    // agent state swaps arriving in quick
+                                    // succession the crossfade momentarily
+                                    // draws outgoing on top of incoming and
+                                    // reads as stacked/ghosted avatars.
+                                    .crossfade(false)
+                                    .memoryCacheKey("avatar:${agent.id}:$agentVersion")
+                                    .build(),
+                                imageLoader = imageLoader,
+                                contentDescription = agent.name,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(RoundedCornerShape(32.dp)),
                             )
                         }
+                        if (isThinking) ThinkingSpinnerOverlay()
                     }
-                } else {
-                    // Fallback: emoji or initials, sized to the current box.
-                    val label = when {
-                        isCurrentPage && voiceState == VoiceState.Listening -> "MIC"
-                        isCurrentPage && voiceState == VoiceState.Thinking -> "..."
-                        isCurrentPage && voiceState == VoiceState.Sending -> "..."
-                        isCurrentPage && voiceState == VoiceState.Speaking -> ">>>"
-                        !agent.emoji.isNullOrBlank() -> agent.emoji!!
-                        else -> agent.name.take(2).uppercase()
+                    else -> {
+                        // Fallback: emoji or initials when no image source
+                        // has resolved yet (e.g. bytes haven't landed via
+                        // DataClient, no bundled default_agent.gif shipped).
+                        val label = when {
+                            isCurrentPage && voiceState == VoiceState.Listening -> "MIC"
+                            isCurrentPage && voiceState == VoiceState.Thinking -> "..."
+                            isCurrentPage && voiceState == VoiceState.Sending -> "..."
+                            isCurrentPage && voiceState == VoiceState.Speaking -> ">>>"
+                            !agent.emoji.isNullOrBlank() -> agent.emoji!!
+                            else -> agent.name.take(2).uppercase()
+                        }
+                        Text(
+                            text = label,
+                            color = agentColor,
+                            fontSize = if (agent.emoji != null) 48.sp else 38.sp,
+                            fontWeight = FontWeight.Black,
+                            fontFamily = FontFamily.Monospace,
+                        )
                     }
-                    Text(
-                        text = label,
-                        color = agentColor,
-                        fontSize = if (agent.emoji != null) 48.sp else 38.sp,
-                        fontWeight = FontWeight.Black,
-                        fontFamily = FontFamily.Monospace,
-                    )
                 }
             }
 
@@ -548,5 +580,27 @@ private fun AgentDialIndicatorOverlay(
                 )
             }
         }
+    }
+}
+
+/**
+ * Small orange spinner painted at the top-center of the avatar box to cue
+ * "waiting on reply" without occluding the currently-rendering avatar frame.
+ * Shared across all three avatar rendering paths (GIF / sprites / atlas).
+ */
+@Composable
+private fun ThinkingSpinnerOverlay(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(top = 8.dp),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(22.dp),
+            strokeWidth = 2.dp,
+            indicatorColor = Color(0xFFFFAA00),
+            trackColor = Color.Black.copy(alpha = 0.45f),
+        )
     }
 }

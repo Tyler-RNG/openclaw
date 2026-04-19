@@ -136,6 +136,11 @@ class PhoneBridge(private val context: Context) : MessageClient.OnMessageReceive
                 val theme = identity?.optString("theme", null)
                 val avatarUrl = identity?.optString("avatarUrl", null)
                     ?: identity?.optString("avatar", null)
+                // New sprite/atlas descriptors are carried through verbatim
+                // as JSON strings. AvatarRuntime parses them on the watch
+                // side — see docs/avatars/formats.md for the schemas.
+                val avatarSpritesJson = identity?.optJSONObject("avatarSprites")?.toString()
+                val avatarAtlasJson = identity?.optJSONObject("avatarAtlas")?.toString()
                 Agent(
                     id = id,
                     name = name,
@@ -143,6 +148,8 @@ class PhoneBridge(private val context: Context) : MessageClient.OnMessageReceive
                     emoji = emoji,
                     theme = theme,
                     avatarUrl = avatarUrl,
+                    avatarSpritesJson = avatarSpritesJson,
+                    avatarAtlasJson = avatarAtlasJson,
                 )
             }
         } catch (_: Throwable) {
@@ -252,6 +259,14 @@ class PhoneBridge(private val context: Context) : MessageClient.OnMessageReceive
         val emoji: String? = null,
         val theme: String? = null,
         val avatarUrl: String? = null,
+        /**
+         * Raw JSON (as a string) for the avatarSprites / avatarAtlas descriptor
+         * emitted by the gateway. AvatarRuntime parses these into
+         * AnimationDefinitions on-demand. Null when the agent uses the legacy
+         * `kind: "states"` GIF shape or doesn't declare a multi-state avatar.
+         */
+        val avatarSpritesJson: String? = null,
+        val avatarAtlasJson: String? = null,
     )
     data class ChatReply(
         val text: String,

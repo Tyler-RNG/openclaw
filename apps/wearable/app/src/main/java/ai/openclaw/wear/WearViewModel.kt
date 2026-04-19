@@ -49,6 +49,9 @@ class WearViewModel(app: Application) : AndroidViewModel(app) {
     /** Avatar bytes keyed by agentId; exposed to UI for `wear-asset:avatar:*` refs. */
     val avatarAssets: StateFlow<Map<String, ByteArray>> get() = assetStore.avatars
 
+    /** Counter bumped on every avatar byte update — drives Coil memory-cache busting. */
+    val avatarVersion: StateFlow<Int> get() = assetStore.avatarVersion
+
     // --- Screen navigation ---
     private val _screen = MutableStateFlow(WearScreen.Connecting)
     val screen: StateFlow<WearScreen> = _screen.asStateFlow()

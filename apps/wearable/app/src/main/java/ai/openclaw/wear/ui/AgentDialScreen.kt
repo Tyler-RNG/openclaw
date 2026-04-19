@@ -54,6 +54,7 @@ import ai.openclaw.wear.PhoneBridge
 import ai.openclaw.wear.VoiceState
 import ai.openclaw.wear.WearViewModel
 import android.util.Base64
+import android.util.Log
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.focusable
@@ -140,6 +141,7 @@ fun AgentDialScreen(viewModel: WearViewModel) {
     val unreadByAgent by viewModel.unreadByAgent.collectAsState()
     val pendingMailJump by viewModel.pendingMailJump.collectAsState()
     val avatarAssets by viewModel.avatarAssets.collectAsState()
+    val avatarVersion by viewModel.avatarVersion.collectAsState()
 
     // Request focus so rotary events reach this composable
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
@@ -189,8 +191,11 @@ fun AgentDialScreen(viewModel: WearViewModel) {
         val agent = agents[pageIndex]
         val isCurrentPage = pagerState.currentPage == pageIndex
         val agentColor = parseThemeColor(agent.theme) ?: OmnitrixGreen
-        val resolvedAvatar = remember(agent.avatarUrl, avatarAssets) {
-            resolveAvatarModel(agent.avatarUrl, avatarAssets)
+        val resolvedAvatar = remember(agent.avatarUrl, avatarAssets, avatarVersion) {
+            val model = resolveAvatarModel(agent.avatarUrl, avatarAssets)
+            val size = (model as? ByteArray)?.size ?: 0
+            Log.d("AgentDialScreen", "avatar update for ${agent.id}: size=${size}B, version=$avatarVersion")
+            model
         }
 
         // Per-agent state — "thinking" no longer bleeds across the dial.
@@ -278,6 +283,7 @@ fun AgentDialScreen(viewModel: WearViewModel) {
                     AsyncImage(
                         model = ImageRequest.Builder(context)
                             .data(imageData)
+                            .memoryCacheKey("avatar:${agent.id}:$avatarVersion")
                             .build(),
                         imageLoader = imageLoader,
                         contentDescription = agent.name,

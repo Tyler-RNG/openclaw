@@ -37,6 +37,11 @@ class WearAssetStore(private val context: Context) {
     private val _avatars = MutableStateFlow<Map<String, ByteArray>>(emptyMap())
     val avatars: StateFlow<Map<String, ByteArray>> = _avatars.asStateFlow()
 
+    // Bumped on every avatar byte update so downstream image loaders can bust
+    // their memory cache — same DataClient path reuses the same cache key.
+    private val _avatarVersion = MutableStateFlow(0)
+    val avatarVersion: StateFlow<Int> = _avatarVersion.asStateFlow()
+
     private val _tts = MutableStateFlow<Map<String, ByteArray>>(emptyMap())
     val tts: StateFlow<Map<String, ByteArray>> = _tts.asStateFlow()
 
@@ -100,6 +105,7 @@ class WearAssetStore(private val context: Context) {
                     path.startsWith("/openclaw/avatars/") -> {
                         val id = path.removePrefix("/openclaw/avatars/")
                         _avatars.update { it + (id to bytes) }
+                        _avatarVersion.update { it + 1 }
                         Log.d(TAG, "avatar $id loaded (${bytes.size}B)")
                     }
                     path.startsWith("/openclaw/tts/") -> {

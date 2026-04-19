@@ -1380,6 +1380,7 @@
                       "gateway/data-plane",
                       "gateway/avatar-states",
                       "gateway/avatar-states-integration",
+                      "gateway/avatar-states-native-deploy",
                       "gateway/avatar-states-sidecar-interim",
                       "gateway/openai-http-api",
                       "gateway/openresponses-http-api",

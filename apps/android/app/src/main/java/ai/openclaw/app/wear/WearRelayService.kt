@@ -99,14 +99,14 @@ class WearRelayService : WearableListenerService() {
    * relies on the Data Layer.
    */
   private suspend fun rewriteAvatars(rawJson: String, app: NodeApp): String {
-    val dataPlane = app.peekRuntime()?.wearRelayDataPlane()
-    val token = app.peekRuntime()?.wearRelayAuthToken()
     return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
       try {
         val root = JSONObject(rawJson)
         val agents = root.optJSONArray("agents") ?: return@withContext rawJson
-        var published = 0
-        var failed = 0
+        var legacyPublished = 0
+        var legacyFailed = 0
+        var statePublished = 0
+        var stateFailed = 0
         var statesAgents = 0
         var agentsSeen = 0
         for (i in 0 until agents.length()) {
@@ -123,38 +123,76 @@ class WearRelayService : WearableListenerService() {
           }
           if (key != null) {
             val value = identity.optString(key)
-            val fetched: Pair<ByteArray, String>? = when {
-              value.startsWith("data:") -> null
-              value.startsWith("file://") || value.startsWith("/") -> localPathToBytes(value)
-              value.startsWith("http://") || value.startsWith("https://") -> fetchUrlAsBytes(value)
-              dataPlane != null -> buildDataPlaneAssetUrl(dataPlane, token, value)?.let { fetchUrlAsBytes(it) }
-              else -> null
-            }
+            val fetched = fetchStateBytes(app, value)
             if (fetched != null) {
               val (bytes, mime) = fetched
               if (putAvatarAsset(app, agentId, bytes, mime)) {
                 identity.put(key, "wear-asset:avatar:$agentId")
-                published++
+                legacyPublished++
               } else {
-                failed++
+                legacyFailed++
               }
             } else if (!value.startsWith("data:")) {
-              failed++
+              legacyFailed++
             }
           }
 
           // Capture multi-state descriptor if the sidecar synthesized one.
           // Runs independent of the legacy-avatar branch so states-only agents
-          // still register. We leave the JSON field in place for any
-          // downstream inspection but the relay never forwards it to the
-          // watch (watch reads bytes, not state metadata).
+          // still register their state map.
+          captureAvatarStates(agentId, identity)
+
+          // State-based agents: publish the default-state bytes up front AND
+          // rewrite avatarUrl to a `wear-asset:` reference. Without this, the
+          // watch's resolveAvatarModel() can't find bytes for the agent (it
+          // only reads `avatarUrl`), so the dial would show the bundled
+          // fallback gif even after subsequent state swaps land bytes at
+          // `/openclaw/avatars/<agentId>` — Coil never looks them up without
+          // the `wear-asset:` sentinel on `avatarUrl`.
           if (identity.has("avatarStates")) {
             statesAgents++
+            val descriptor = AvatarStatesStore.get(agentId)
+            val defaultEntry = descriptor?.states?.get(descriptor.default)
+            if (descriptor != null && defaultEntry != null) {
+              val fetched = fetchStateBytes(app, defaultEntry.file)
+              if (fetched != null) {
+                val (bytes, mime) = fetched
+                AvatarStatesStore.putCachedBytes(
+                  agentId,
+                  descriptor.default,
+                  AvatarStatesStore.CachedAvatar(bytes, mime),
+                )
+                if (putAvatarAsset(app, agentId, bytes, mime)) {
+                  identity.put("avatarUrl", "wear-asset:avatar:$agentId")
+                  statePublished++
+                  WearRelayLog.info(
+                    "agents",
+                    "$agentId default(${descriptor.default}): ${bytes.size / 1024}KB published",
+                  )
+                } else {
+                  stateFailed++
+                }
+              } else {
+                stateFailed++
+                WearRelayLog.warn(
+                  "agents",
+                  "$agentId default(${descriptor.default}): fetch failed (${defaultEntry.file.take(40)})",
+                )
+              }
+            }
           }
-          captureAvatarStates(agentId, identity)
         }
-        if (published > 0 || failed > 0) {
-          WearRelayLog.info("agents", "avatars: $published via asset, $failed failed")
+        if (legacyPublished > 0 || legacyFailed > 0) {
+          WearRelayLog.info(
+            "agents",
+            "legacy avatars: $legacyPublished via asset, $legacyFailed failed",
+          )
+        }
+        if (statePublished > 0 || stateFailed > 0) {
+          WearRelayLog.info(
+            "agents",
+            "state avatars: $statePublished default frames, $stateFailed failed",
+          )
         }
         // Summary line so we can tell at a glance whether the sidecar is
         // synthesizing avatarStates. If this says "states: 0/N", the sidecar
@@ -163,6 +201,27 @@ class WearRelayService : WearableListenerService() {
         root.toString()
       } catch (_: Throwable) {
         rawJson
+      }
+    }
+  }
+
+  /**
+   * Resolve a state `file` reference (data URL, absolute path, http URL, or
+   * gateway-relative path) into raw bytes + mime. Used both for initial
+   * default-frame publish during agent list rewrite and mid-reply state swaps.
+   * Returns null if the ref can't be resolved or the fetch failed; callers log
+   * the outcome in their own context.
+   */
+  private suspend fun fetchStateBytes(app: NodeApp, ref: String): Pair<ByteArray, String>? {
+    val dataPlane = app.peekRuntime()?.wearRelayDataPlane()
+    val token = app.peekRuntime()?.wearRelayAuthToken()
+    return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+      when {
+        ref.startsWith("data:") -> null
+        ref.startsWith("file://") || ref.startsWith("/") -> localPathToBytes(ref)
+        ref.startsWith("http://") || ref.startsWith("https://") -> fetchUrlAsBytes(ref)
+        dataPlane != null -> buildDataPlaneAssetUrl(dataPlane, token, ref)?.let { fetchUrlAsBytes(it) }
+        else -> null
       }
     }
   }
@@ -539,23 +598,7 @@ class WearRelayService : WearableListenerService() {
     val (bytes, mime) = if (cached != null) {
       cached.bytes to cached.mime
     } else {
-      val dataPlane = app.peekRuntime()?.wearRelayDataPlane()
-      val token = app.peekRuntime()?.wearRelayAuthToken()
-      val fetched = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-        val ref = stateEntry.file
-        when {
-          ref.startsWith("data:") -> null
-          ref.startsWith("file://") || ref.startsWith("/") -> localPathToBytes(ref)
-          ref.startsWith("http://") || ref.startsWith("https://") -> fetchUrlAsBytes(ref)
-          // Relative path — resolve against the gateway's data-plane base URL
-          // the same way the legacy avatar flow does. Covers the native-deploy
-          // case where the gateway emits raw config values for state files and
-          // clients are expected to prefix with <publicBaseUrl>/openclaw-assets/.
-          dataPlane != null -> buildDataPlaneAssetUrl(dataPlane, token, ref)
-            ?.let { fetchUrlAsBytes(it) }
-          else -> null
-        }
-      }
+      val fetched = fetchStateBytes(app, stateEntry.file)
       if (fetched == null) {
         WearRelayLog.warn("chat", "$agentId avatar($stateName): fetch failed (${stateEntry.file.take(40)})")
         return
@@ -570,7 +613,7 @@ class WearRelayService : WearableListenerService() {
     val published = putAvatarAsset(app, agentId, bytes, mime)
     WearRelayLog.info(
       "chat",
-      "$agentId avatar($stateName): ${if (published) "swap" else "swap failed"}",
+      "$agentId avatar($stateName): ${if (published) "swap ${bytes.size / 1024}KB" else "swap failed"}",
     )
   }
 

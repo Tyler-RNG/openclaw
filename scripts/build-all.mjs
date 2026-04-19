@@ -62,6 +62,11 @@ export const BUILD_ALL_STEPS = [
     kind: "node",
     args: ["--import", "tsx", "scripts/write-cli-compat.ts"],
   },
+  // Control UI (Vite) is part of a complete dist: the gateway serves it at
+  // `/` and errors at runtime with "Control UI assets not found" if the
+  // directory is missing. Kept out of the `ciArtifacts` profile since CI
+  // artifact builds don't need it.
+  { label: "ui:build", kind: "pnpm", pnpmArgs: ["ui:build"] },
 ];
 
 export const BUILD_ALL_PROFILES = {

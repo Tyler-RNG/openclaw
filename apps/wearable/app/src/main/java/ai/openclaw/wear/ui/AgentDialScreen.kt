@@ -150,6 +150,7 @@ fun AgentDialScreen(viewModel: WearViewModel) {
     val spriteFramesByAgent by viewModel.spriteFrames.collectAsState()
     val atlasImagesByAgent by viewModel.atlasImages.collectAsState()
     val atlasManifestsByAgent by viewModel.atlasManifests.collectAsState()
+    val agentStates by viewModel.agentStates.collectAsState()
 
     // Request focus so rotary events reach this composable
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
@@ -315,6 +316,7 @@ fun AgentDialScreen(viewModel: WearViewModel) {
                             agentId = agent.id,
                             descriptorJson = spritesJson,
                             framesByKey = spriteFrames,
+                            currentState = agentStates[agent.id],
                             contentDescription = agent.name,
                             modifier = Modifier
                                 .fillMaxSize()
@@ -327,6 +329,7 @@ fun AgentDialScreen(viewModel: WearViewModel) {
                             agentId = agent.id,
                             manifestJson = atlasManifestLive,
                             atlasImageBytes = atlasBytes,
+                            currentState = agentStates[agent.id],
                             contentDescription = agent.name,
                             modifier = Modifier
                                 .fillMaxSize()

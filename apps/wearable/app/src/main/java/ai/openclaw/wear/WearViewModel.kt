@@ -65,6 +65,9 @@ class WearViewModel(app: Application) : AndroidViewModel(app) {
     /** Atlas manifest JSON text, keyed by agentId. */
     val atlasManifests: StateFlow<Map<String, String>> get() = assetStore.atlasManifests
 
+    /** Current avatar state name per agent (phone-driven marker dispatch). */
+    val agentStates: StateFlow<Map<String, String>> get() = assetStore.agentStates
+
     // --- Screen navigation ---
     private val _screen = MutableStateFlow(WearScreen.Connecting)
     val screen: StateFlow<WearScreen> = _screen.asStateFlow()

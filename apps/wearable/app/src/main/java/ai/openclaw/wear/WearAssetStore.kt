@@ -66,6 +66,16 @@ class WearAssetStore(private val context: Context) {
     private val _atlasManifests = MutableStateFlow<Map<String, String>>(emptyMap())
     val atlasManifests: StateFlow<Map<String, String>> = _atlasManifests.asStateFlow()
 
+    /**
+     * Current avatar state per agent, driven by `/openclaw/avatars/<id>/state`
+     * DataItems the phone publishes on every marker dispatch. Consumed by
+     * AgentDialScreen → AvatarRuntime.requestState so sprite/atlas agents
+     * can swap mid-reply. Unknown/stale state names are harmless — the
+     * runtime silently ignores them.
+     */
+    private val _agentStates = MutableStateFlow<Map<String, String>>(emptyMap())
+    val agentStates: StateFlow<Map<String, String>> = _agentStates.asStateFlow()
+
     private val _tts = MutableStateFlow<Map<String, ByteArray>>(emptyMap())
     val tts: StateFlow<Map<String, ByteArray>> = _tts.asStateFlow()
 
@@ -73,7 +83,23 @@ class WearAssetStore(private val context: Context) {
         for (event in events) {
             val path = event.dataItem.uri.path ?: continue
             when (event.type) {
-                DataEvent.TYPE_CHANGED -> handleChanged(event.dataItem, path)
+                DataEvent.TYPE_CHANGED -> {
+                    // State-signal path is a tiny JSON DataMap, no Asset —
+                    // handled synchronously before falling through to the
+                    // asset-bearing branches.
+                    val stateMatch = Regex("${Regex.escape(WearAsset.DATA_AVATAR_PATH)}/([^/]+)/state").matchEntire(path)
+                    if (stateMatch != null) {
+                        val agentId = stateMatch.groupValues[1]
+                        val dm = runCatching { DataMapItem.fromDataItem(event.dataItem).dataMap }.getOrNull()
+                        val stateName = dm?.getString("state")?.takeIf { it.isNotBlank() }
+                        if (stateName != null) {
+                            _agentStates.update { it + (agentId to stateName) }
+                            Log.d(TAG, "state $agentId → $stateName")
+                        }
+                    } else {
+                        handleChanged(event.dataItem, path)
+                    }
+                }
                 DataEvent.TYPE_DELETED -> handleDeleted(path)
             }
         }

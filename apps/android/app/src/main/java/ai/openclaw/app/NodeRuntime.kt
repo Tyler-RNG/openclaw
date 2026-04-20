@@ -25,6 +25,7 @@ import ai.openclaw.app.voice.MicCaptureManager
 import ai.openclaw.app.voice.TalkModeManager
 import ai.openclaw.app.voice.VoiceConversationEntry
 import ai.openclaw.app.wear.WearRelayLog
+import ai.openclaw.app.wear.parseAvatarMarkers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -1131,6 +1132,14 @@ class NodeRuntime(
     val audioBase64: String? = null,
     val audioAssetRef: String? = null,
     val audioMime: String? = null,
+    /**
+     * Avatar state markers already extracted from the text by NodeRuntime.
+     * When populated, the relay should dispatch these as state swaps and
+     * NOT re-parse `text` — by the time we reach this point `text` is
+     * already the cleaned (marker-stripped) output, so re-running the
+     * parser would find nothing and the markers would get dropped.
+     */
+    val avatarMarkers: List<String> = emptyList(),
   )
 
   /**
@@ -1305,8 +1314,16 @@ class NodeRuntime(
           val lastBlockType = signature.lastOrNull()?.first
           if (stableCount >= stabilityThreshold && lastBlockType == "text") {
             sendJob.cancel()
-            val finalText = blocks.lastOrNull()?.takeIf { it.isNotBlank() }
-            if (finalText != null) {
+            val finalTextRaw = blocks.lastOrNull()?.takeIf { it.isNotBlank() }
+            if (finalTextRaw != null) {
+              // Strip `[avatar:X]` markers before TTS so the model's tone
+              // cues don't get spoken aloud ("avatar happy"). Parsed once
+              // here and forwarded on WearChatPart so the relay layer can
+              // dispatch state swaps without re-parsing — the cleaned text
+              // no longer contains the markers to re-discover.
+              val parsed = parseAvatarMarkers(finalTextRaw)
+              val finalText = parsed.cleanedText.trim().ifEmpty { finalTextRaw }
+              val markers = parsed.markers.map { it.state }
               WearRelayLog.info("chat", "final: \"${finalText.take(80)}\"")
               // TODO(tts-streaming): `wearRelayTalkSpeak` buffers the full
               // audio blob from /stream/tts then ships it, so first-sound
@@ -1322,6 +1339,7 @@ class NodeRuntime(
                 audioBase64 = audio?.audioBase64,
                 audioAssetRef = audio?.audioAssetRef,
                 audioMime = audio?.mimeType,
+                avatarMarkers = markers,
               ))
             } else {
               onPart(WearChatPart("", isFinal = true))
@@ -1334,14 +1352,19 @@ class NodeRuntime(
         val fallback = lastSignature.filter { it.first == "text" }.map { it.second }.lastOrNull()
         if (!fallback.isNullOrBlank()) {
           WearRelayLog.warn("chat", "poll limit hit, finalizing last seen")
-          val audio = wearRelayTalkSpeak(fallback, agentId)
+          // Same marker strip as the happy-path final branch so a
+          // poll-timeout finalization doesn't regress to speaking markers.
+          val parsed = parseAvatarMarkers(fallback)
+          val cleaned = parsed.cleanedText.trim().ifEmpty { fallback }
+          val audio = wearRelayTalkSpeak(cleaned, agentId)
           onPart(WearChatPart(
-            text = fallback,
+            text = cleaned,
             isFinal = true,
             audioUrl = audio?.audioUrl,
             audioBase64 = audio?.audioBase64,
             audioAssetRef = audio?.audioAssetRef,
             audioMime = audio?.mimeType,
+            avatarMarkers = parsed.markers.map { it.state },
           ))
           null
         } else {

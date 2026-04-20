@@ -102,6 +102,7 @@
 - `scripts/AGENTS.md` owns script-runner, local-check lock, and test/lint wrapper rules.
 - `docs/avatars/formats.md` is the canonical artist/integrator spec for avatar formats (`kind: "states"` / `"sprites"` / `"atlas"`). Update it whenever `src/config/types.agents.ts`, `src/config/zod-schema.ts` avatar shapes, the phone `rewriteAvatars` prefetch branches, the watch `AvatarRuntime`, or the `scripts/avatars/*` authoring tools change — it's the source of truth artists author against.
 - `docs/tts/streaming.md` is the pinned design for phone→watch chunked TTS streaming (wire format, phase rollout, tempfile-fed MediaPlayer playback). Update it whenever `NodeRuntime.wearRelayChatStream` changes its TTS call shape, when the `/openclaw/tts/<turnId>/*` DataClient path schema evolves, or when chunk sizing / playback runtime is retuned.
+- `docs/followups.md` tracks scoped, designed-but-not-shipped work (wear Tiles, AOD, TTS streaming phases, crossfade transitions, telemetry). Add entries when landing a change that needs a follow-up; remove entries when their code lands on main. Breadcrumb format: one-line heading + short prose block describing what's left and where it plugs in.
 
 ## exe.dev VM ops (general)
 

@@ -29,4 +29,13 @@ object WearAsset {
     }
     fun atlasImagePath(agentId: String): String = "$DATA_AVATAR_PATH/$agentId/atlas/image"
     fun atlasManifestPath(agentId: String): String = "$DATA_AVATAR_PATH/$agentId/atlas/manifest"
+
+    /**
+     * State-change signal path. DataItem body: `{ state: "<name>", ts: Long }`.
+     * Watch subscribes here and pipes updates into AvatarRuntime.requestState
+     * so sprite/atlas agents can swap mid-reply without byte re-pushes.
+     * Format-agnostic: the phone publishes this for every agent kind; the
+     * watch's AvatarRuntime ignores unknown state names.
+     */
+    fun avatarStatePath(agentId: String): String = "$DATA_AVATAR_PATH/$agentId/state"
 }

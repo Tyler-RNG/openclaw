@@ -7,6 +7,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -35,6 +36,7 @@ fun SpriteAvatar(
     agentId: String,
     descriptorJson: String,
     framesByKey: Map<String, ByteArray>,
+    currentState: String?,
     contentDescription: String?,
     modifier: Modifier = Modifier,
 ) {
@@ -47,6 +49,11 @@ fun SpriteAvatar(
         AvatarRuntime(agentId, source, defs)
     }
     DisposableEffect(runtime) { onDispose { runtime.dispose() } }
+    // Forward phone-driven state changes into the runtime. Non-null + changed
+    // state triggers `requestState`; the runtime no-ops on unknown states.
+    LaunchedEffect(runtime, currentState) {
+        currentState?.takeIf { it.isNotBlank() }?.let { runtime.requestState(it) }
+    }
     val bitmap by runtime.currentBitmap.collectAsState()
     BitmapFrame(bitmap, contentDescription, modifier)
 }
@@ -61,6 +68,7 @@ fun AtlasAvatar(
     agentId: String,
     manifestJson: String,
     atlasImageBytes: ByteArray,
+    currentState: String?,
     contentDescription: String?,
     modifier: Modifier = Modifier,
 ) {
@@ -77,6 +85,9 @@ fun AtlasAvatar(
         AvatarRuntime(agentId, source, defs)
     }
     DisposableEffect(runtime) { onDispose { runtime?.dispose() } }
+    LaunchedEffect(runtime, currentState) {
+        currentState?.takeIf { it.isNotBlank() }?.let { runtime?.requestState(it) }
+    }
     val bitmap by (runtime?.currentBitmap ?: return).collectAsState()
     BitmapFrame(bitmap, contentDescription, modifier)
 }

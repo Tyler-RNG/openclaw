@@ -153,6 +153,9 @@ class WearRelayService : WearableListenerService() {
           if (identity.has("avatarStates")) {
             statesAgents++
             val descriptor = AvatarStatesStore.get(agentId)
+            if (descriptor != null) {
+              AgentAvatarMeta.setDefault(agentId, descriptor.default)
+            }
             val defaultEntry = descriptor?.states?.get(descriptor.default)
             if (descriptor != null && defaultEntry != null) {
               val fetched = fetchStateBytes(app, defaultEntry.file)
@@ -189,6 +192,9 @@ class WearRelayService : WearableListenerService() {
           // prefix and drives per-state timing locally. See docs/avatars/formats.md.
           val spritesObj = identity.optJSONObject("avatarSprites")
           if (spritesObj != null) {
+            spritesObj.optString("default", "").takeIf { it.isNotBlank() }?.let {
+              AgentAvatarMeta.setDefault(agentId, it)
+            }
             val published = prefetchSpriteFrames(app, agentId, spritesObj)
             if (published > 0) {
               identity.put("avatarUrl", WearAsset.buildSpritesRef(agentId))
@@ -202,6 +208,9 @@ class WearRelayService : WearableListenerService() {
           // bitmap on each tick.
           val atlasObj = identity.optJSONObject("avatarAtlas")
           if (atlasObj != null) {
+            atlasObj.optString("default", "").takeIf { it.isNotBlank() }?.let {
+              AgentAvatarMeta.setDefault(agentId, it)
+            }
             val ok = prefetchAtlas(app, agentId, atlasObj)
             if (ok) {
               identity.put("avatarUrl", WearAsset.buildAtlasRef(agentId))
@@ -485,6 +494,24 @@ class WearRelayService : WearableListenerService() {
     }
   }
 
+  /**
+   * Publishes a {state, ts} DataItem so the watch can drive AvatarRuntime
+   * state swaps without needing per-state bytes on the wire. Fires for
+   * every agent kind (sprite/atlas consume this; legacy also gets a signal
+   * but continues to swap via the separate byte-push path).
+   */
+  private suspend fun publishAgentState(app: NodeApp, agentId: String, stateName: String) {
+    try {
+      val request = PutDataMapRequest.create(WearAsset.avatarStatePath(agentId)).apply {
+        dataMap.putString("state", stateName)
+        dataMap.putLong("ts", System.currentTimeMillis())
+      }.asPutDataRequest().setUrgent()
+      com.google.android.gms.wearable.Wearable.getDataClient(app).putDataItem(request).await()
+    } catch (e: Throwable) {
+      WearRelayLog.warn("chat", "state signal $agentId→$stateName: ${e.javaClass.simpleName}")
+    }
+  }
+
   /** Publishes the avatar bytes as a DataClient Asset. Returns true on success. */
   private suspend fun putAvatarAsset(app: NodeApp, agentId: String, bytes: ByteArray, mime: String): Boolean {
     return try {
@@ -637,56 +664,57 @@ class WearRelayService : WearableListenerService() {
     // immediately on dispatch; reset to default when the reply finishes or
     // the run errors. When the model emits its own markers mid-reply, those
     // override the thinking frame naturally (last-write-wins on DataClient).
-    val thinkingEntry = statesDesc?.states?.get("thinking")
-    if (thinkingEntry != null) {
-      WearRelayLog.info("chat", "$agentId avatar: thinking (dispatch)")
-      WearRelayScope.launch {
-        publishStateAvatar(app, agentId, "thinking", thinkingEntry)
-      }
+    // Dispatch an avatar state change through two parallel channels so all
+    // three avatar formats swap correctly on markers:
+    //   1. State signal: small JSON DataItem at /openclaw/avatars/<id>/state.
+    //      Sprite + atlas agents observe this and call runtime.requestState;
+    //      legacy kind:"states" agents also see it but prefer path (2).
+    //   2. Byte push: only meaningful for legacy kind:"states" agents — writes
+    //      the state's GIF bytes to /openclaw/avatars/<id> so Coil swaps.
+    val dispatchStateChange: suspend (String) -> Unit = inner@{ stateName ->
+      publishAgentState(app, agentId, stateName)
+      val stateEntry = statesDesc?.states?.get(stateName) ?: return@inner
+      publishStateAvatar(app, agentId, stateName, stateEntry)
     }
+
+    // Kick off "thinking" on dispatch. The state signal fires for every
+    // agent kind; the watch-side runtime silently ignores it if the
+    // agent's descriptor has no `thinking` state.
+    WearRelayLog.info("chat", "$agentId avatar: thinking (dispatch)")
+    WearRelayScope.launch { dispatchStateChange("thinking") }
 
     var seq = 0
 
-    // Per-turn marker plumbing. The growing-text parser is stateful (buffers
-    // partial marker lines across poll deltas). `markersDispatched` de-dupes
-    // so the final-part's one-shot re-parse can't double-fire swaps we've
-    // already dispatched mid-stream.
-    val growingMarkerParser = if (statesDesc != null) AvatarMarkerParser() else null
+    // Per-turn marker de-dupe. Markers arriving mid-stream via onGrowingDelta
+    // and then again on the final part must only dispatch once per turn. The
+    // growing-text parser is stateful so it naturally doesn't re-emit markers
+    // across deltas — the dedupe set protects against the final part's
+    // (already-parsed-by-NodeRuntime) markers duplicating on top.
     val markersDispatched = mutableSetOf<String>()
     val dispatchMarkerIfNew: (String) -> Unit = dispatch@{ stateName ->
-      val desc = statesDesc ?: return@dispatch
       if (!markersDispatched.add(stateName)) return@dispatch
-      val stateEntry = desc.states[stateName]
-      if (stateEntry == null) {
-        WearRelayLog.info("chat", "$agentId avatar: unknown state \"$stateName\"")
-        return@dispatch
-      }
-      WearRelayScope.launch {
-        publishStateAvatar(app, agentId, stateName, stateEntry)
-      }
+      WearRelayScope.launch { dispatchStateChange(stateName) }
     }
+    // The growing-text parser fires mid-stream markers for legacy agents
+    // (sprite/atlas use the state signal instead; their runtime lives on
+    // the watch). Retained for legacy kind:"states" smoothness.
+    val growingMarkerParser = if (statesDesc != null) AvatarMarkerParser() else null
 
     val error = runtime.wearRelayChatStream(
       agentId,
       textForGateway,
       onPart = { part ->
-      val (cleanedText, markers) = if (statesDesc != null) {
-        val parsed = parseAvatarMarkers(part.text)
-        parsed.cleanedText to parsed.markers
-      } else {
-        part.text to emptyList()
-      }
-
-      // Fire GIF swaps for each newly-observed marker (de-duped so markers
-      // already seen mid-stream via onGrowingDelta don't re-dispatch).
-      for (marker in markers) {
-        dispatchMarkerIfNew(marker.state)
+      // NodeRuntime already stripped markers from `part.text` and handed
+      // us the pre-parsed list on `avatarMarkers`. Re-parsing would find
+      // nothing; use what's already there.
+      for (stateName in part.avatarMarkers) {
+        dispatchMarkerIfNew(stateName)
       }
 
       val msg = JSONObject().apply {
         put("agentId", agentId)
         put("seq", seq++)
-        put("text", cleanedText)
+        put("text", part.text)
         put("final", part.isFinal)
         when {
           part.audioAssetRef != null -> {
@@ -711,16 +739,15 @@ class WearRelayService : WearableListenerService() {
         part.audioBase64 != null -> " +b64"
         else -> ""
       }
-      WearRelayLog.info("chat", "$agentId → $kind ${cleanedText.length}ch$audioTag")
+      WearRelayLog.info("chat", "$agentId → $kind ${part.text.length}ch$audioTag")
 
-      // Reset to default state on final so the watch resting pose matches
-      // the static avatar between runs. No-op if the agent isn't states-aware.
-      if (part.isFinal && statesDesc != null) {
-        val defaultEntry = statesDesc.states[statesDesc.default]
-        if (defaultEntry != null) {
-          WearRelayScope.launch {
-            publishStateAvatar(app, agentId, statesDesc.default, defaultEntry)
-          }
+      // Reset to default state on final so the resting pose matches the
+      // idle avatar between runs. Fires for every agent kind via the
+      // state signal; legacy agents also get their default bytes re-pushed.
+      if (part.isFinal) {
+        val defaultState = statesDesc?.default ?: AgentAvatarMeta.getDefault(agentId)
+        if (defaultState != null) {
+          WearRelayScope.launch { dispatchStateChange(defaultState) }
         }
       }
     },
@@ -744,13 +771,9 @@ class WearRelayService : WearableListenerService() {
       WearRelayLog.error("chat", error)
       // Reset avatar on error/timeout too — otherwise a stalled gateway
       // leaves the watch on the "thinking" frame forever.
-      if (statesDesc != null) {
-        val defaultEntry = statesDesc.states[statesDesc.default]
-        if (defaultEntry != null) {
-          WearRelayScope.launch {
-            publishStateAvatar(app, agentId, statesDesc.default, defaultEntry)
-          }
-        }
+      val defaultState = statesDesc?.default ?: AgentAvatarMeta.getDefault(agentId)
+      if (defaultState != null) {
+        WearRelayScope.launch { dispatchStateChange(defaultState) }
       }
     }
   }

@@ -24,6 +24,8 @@ object WearAsset {
         else -> null
     }
 
+    fun avatarStatePath(agentId: String): String = "$DATA_AVATAR_PATH/$agentId/state"
+
     private fun stripPrefix(raw: String?, prefix: String): String? {
         if (raw == null || !raw.startsWith(prefix)) return null
         val id = raw.substring(prefix.length)

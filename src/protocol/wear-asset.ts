@@ -33,6 +33,16 @@ export function buildWearAssetAtlasRef(agentId: string): string {
   return `${WEAR_ASSET_ATLAS_PREFIX}${agentId}`;
 }
 
+/**
+ * DataClient path the phone publishes `{ state, ts }` signals to when an
+ * agent's avatar should swap mid-reply. Watch subscribes here and drives
+ * `AvatarRuntime.requestState`. Format-agnostic across all three avatar
+ * kinds — runtime ignores unknown state names.
+ */
+export function wearAvatarStatePath(agentId: string): string {
+  return `${WEAR_DATA_AVATAR_PATH}/${agentId}/state`;
+}
+
 /** Returns the agentId when `raw` is a well-formed wear-asset avatar ref, else null. */
 export function parseWearAssetAvatarRef(raw: string | null | undefined): string | null {
   if (!raw || !raw.startsWith(WEAR_ASSET_AVATAR_PREFIX)) {

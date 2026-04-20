@@ -1308,25 +1308,12 @@ class NodeRuntime(
             val finalText = blocks.lastOrNull()?.takeIf { it.isNotBlank() }
             if (finalText != null) {
               WearRelayLog.info("chat", "final: \"${finalText.take(80)}\"")
-              // TODO(tts-streaming): `wearRelayTalkSpeak` waits for the full
-              // audio blob from the gateway's /stream/tts, so first-sound
-              // latency on the watch is ~2s. Replace with a chunked producer:
-              //   1. Open HttpURLConnection to ${dataPlane.baseUrl}/stream/tts
-              //      with Transfer-Encoding: chunked; read InputStream in
-              //      8–16KB frames as they arrive.
-              //   2. For each frame, publish to DataClient path
-              //      `/openclaw/tts/<turnId>/<seq>` (use WearAsset.DATA_TTS_PATH)
-              //      with fields {seq, bytes, mime}. Mark last frame {seq,
-              //      final:true} and/or publish `/openclaw/tts/<turnId>/end`.
-              //   3. Watch subscribes to `/openclaw/tts/<turnId>/*`, orders
-              //      frames by seq, feeds to an ExoPlayer streaming source
-              //      (ConcatenatingMediaSource or a custom DataSource with a
-              //      ChunkingBuffer). Start playback on first frame.
-              //   4. Keep the current `audioBase64`/`audioAssetRef` fallback
-              //      for when streaming setup fails (network glitch, watch
-              //      ExoPlayer init error) so no regression.
-              // Expected latency improvement: ~2s → ~400ms time-to-first-audio.
-              // See proposal in commit 0a59c11098 session notes.
+              // TODO(tts-streaming): `wearRelayTalkSpeak` buffers the full
+              // audio blob from /stream/tts then ships it, so first-sound
+              // latency on the watch is ~2s. Full design (phase 0 / 1 / 2
+              // rollout, wire format, tempfile-fed MediaPlayer on the watch)
+              // is pinned at `docs/tts/streaming.md`. Expected win after
+              // phase 2 lands: ~2s → ~400ms time-to-first-audio.
               val audio = wearRelayTalkSpeak(finalText, agentId)
               onPart(WearChatPart(
                 text = finalText,

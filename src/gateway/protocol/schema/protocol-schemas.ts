@@ -99,6 +99,11 @@ import {
   DeviceTokenRotateParamsSchema,
 } from "./devices.js";
 import {
+  CharacterManifestSchema,
+  NodeGetCharacterManifestParamsSchema,
+  NodeGetCharacterManifestResultSchema,
+} from "./display.js";
+import {
   ExecApprovalsGetParamsSchema,
   ExecApprovalsNodeGetParamsSchema,
   ExecApprovalsNodeSetParamsSchema,
@@ -231,6 +236,9 @@ export const ProtocolSchemas = {
   NodePendingEnqueueParams: NodePendingEnqueueParamsSchema,
   NodePendingEnqueueResult: NodePendingEnqueueResultSchema,
   NodeInvokeRequestEvent: NodeInvokeRequestEventSchema,
+  NodeGetCharacterManifestParams: NodeGetCharacterManifestParamsSchema,
+  NodeGetCharacterManifestResult: NodeGetCharacterManifestResultSchema,
+  CharacterManifest: CharacterManifestSchema,
   PushTestParams: PushTestParamsSchema,
   PushTestResult: PushTestResultSchema,
   SecretsReloadParams: SecretsReloadParamsSchema,

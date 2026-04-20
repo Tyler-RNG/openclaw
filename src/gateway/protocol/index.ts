@@ -165,6 +165,19 @@ import {
   NodePendingEnqueueParamsSchema,
   type NodePendingEnqueueResult,
   NodePendingEnqueueResultSchema,
+  type CharacterManifest,
+  CharacterManifestSchema,
+  DISPLAY_CAP_SPRITE_FULLBODY,
+  DISPLAY_CAP_SPRITE_HEADSHOT,
+  DISPLAY_CAP_TEXT,
+  DISPLAY_CAP_TTS,
+  DISPLAY_CAPS,
+  DISPLAY_MODE_FULLBODY,
+  DISPLAY_MODE_HEADSHOT,
+  type NodeGetCharacterManifestParams,
+  NodeGetCharacterManifestParamsSchema,
+  type NodeGetCharacterManifestResult,
+  NodeGetCharacterManifestResultSchema,
   type NodeInvokeParams,
   NodeInvokeParamsSchema,
   type NodeInvokeResultParams,
@@ -353,6 +366,13 @@ export const validateNodeInvokeResultParams = ajv.compile<NodeInvokeResultParams
   NodeInvokeResultParamsSchema,
 );
 export const validateNodeEventParams = ajv.compile<NodeEventParams>(NodeEventParamsSchema);
+export const validateNodeGetCharacterManifestParams = ajv.compile<NodeGetCharacterManifestParams>(
+  NodeGetCharacterManifestParamsSchema,
+);
+export const validateNodeGetCharacterManifestResult = ajv.compile<NodeGetCharacterManifestResult>(
+  NodeGetCharacterManifestResultSchema,
+);
+export const validateCharacterManifest = ajv.compile<CharacterManifest>(CharacterManifestSchema);
 export const validateNodePendingDrainParams = ajv.compile<NodePendingDrainParams>(
   NodePendingDrainParamsSchema,
 );
@@ -579,6 +599,16 @@ export {
   NodePendingDrainResultSchema,
   NodePendingEnqueueParamsSchema,
   NodePendingEnqueueResultSchema,
+  CharacterManifestSchema,
+  DISPLAY_CAP_SPRITE_FULLBODY,
+  DISPLAY_CAP_SPRITE_HEADSHOT,
+  DISPLAY_CAP_TEXT,
+  DISPLAY_CAP_TTS,
+  DISPLAY_CAPS,
+  DISPLAY_MODE_FULLBODY,
+  DISPLAY_MODE_HEADSHOT,
+  NodeGetCharacterManifestParamsSchema,
+  NodeGetCharacterManifestResultSchema,
   SessionsListParamsSchema,
   SessionsPreviewParamsSchema,
   SessionsResolveParamsSchema,
@@ -765,6 +795,9 @@ export type {
   NodePendingDrainResult,
   NodePendingEnqueueParams,
   NodePendingEnqueueResult,
+  CharacterManifest,
+  NodeGetCharacterManifestParams,
+  NodeGetCharacterManifestResult,
   SessionsListParams,
   SessionsPreviewParams,
   SessionsResolveParams,

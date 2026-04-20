@@ -37,6 +37,7 @@ import {
   errorShape,
   validateNodeDescribeParams,
   validateNodeEventParams,
+  validateNodeGetCharacterManifestParams,
   validateNodeInvokeParams,
   validateNodeListParams,
   validateNodePendingAckParams,
@@ -47,6 +48,7 @@ import {
   validateNodePairVerifyParams,
   validateNodeRenameParams,
 } from "../protocol/index.js";
+import { buildCharacterManifest } from "./character-manifest.js";
 import { handleNodeInvokeResult } from "./nodes.handlers.invoke-result.js";
 import {
   respondInvalidParams,
@@ -748,6 +750,38 @@ export const nodeHandlers: GatewayRequestHandlers = {
         return;
       }
       respond(true, { ts: Date.now(), ...node }, undefined);
+    });
+  },
+  "node.getCharacterManifest": async ({ params, respond, client }) => {
+    if (!validateNodeGetCharacterManifestParams(params)) {
+      respondInvalidParams({
+        respond,
+        method: "node.getCharacterManifest",
+        validator: validateNodeGetCharacterManifestParams,
+      });
+      return;
+    }
+    const { agentId, modes } = params as { agentId: string; modes?: string[] };
+    const trimmedAgentId = normalizeOptionalString(agentId) ?? "";
+    if (!trimmedAgentId) {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "agentId required"));
+      return;
+    }
+    await respondUnavailableOnThrow(respond, async () => {
+      const cfg = loadConfig();
+      const result = await buildCharacterManifest({
+        cfg,
+        agentId: trimmedAgentId,
+        modes,
+        caps: client?.connect?.caps,
+      });
+      if (!result.ok) {
+        const code =
+          result.code === "unknown-agent" ? ErrorCodes.INVALID_REQUEST : ErrorCodes.UNAVAILABLE;
+        respond(false, undefined, errorShape(code, result.message));
+        return;
+      }
+      respond(true, { manifest: result.manifest, revision: result.revision }, undefined);
     });
   },
   "node.canvas.capability.refresh": async ({ params, respond, client }) => {

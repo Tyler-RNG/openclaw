@@ -105,6 +105,7 @@ const BASE_METHODS = [
   "node.rename",
   "node.list",
   "node.describe",
+  "node.getCharacterManifest",
   "node.pending.drain",
   "node.pending.enqueue",
   "node.invoke",

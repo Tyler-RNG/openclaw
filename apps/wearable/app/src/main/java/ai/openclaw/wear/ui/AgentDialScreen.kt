@@ -49,9 +49,6 @@ import androidx.compose.ui.unit.sp
 import androidx.wear.compose.material.Text
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
-import coil3.request.crossfade
-import coil3.gif.AnimatedImageDecoder
-import coil3.ImageLoader
 import ai.openclaw.wear.PhoneBridge
 import ai.openclaw.wear.VoiceState
 import ai.openclaw.wear.WearViewModel
@@ -125,19 +122,6 @@ fun AgentDialScreen(viewModel: WearViewModel) {
             Text("No agents", color = OmnitrixGreen, fontFamily = FontFamily.Monospace)
         }
         return
-    }
-
-    // Check if default GIF exists in res/raw
-    val defaultGifResId = remember {
-        context.resources.getIdentifier("default_agent", "raw", context.packageName)
-    }
-    val hasDefaultGif = defaultGifResId != 0
-
-    // Image loader with GIF support
-    val imageLoader = remember {
-        ImageLoader.Builder(context)
-            .components { add(AnimatedImageDecoder.Factory()) }
-            .build()
     }
 
     val pagerState = rememberPagerState(pageCount = { agents.size })
@@ -283,18 +267,15 @@ fun AgentDialScreen(viewModel: WearViewModel) {
                     },
                 contentAlignment = Alignment.Center,
             ) {
-                val imageData: Any? = when {
-                    resolvedAvatar != null -> resolvedAvatar
-                    hasDefaultGif -> "android.resource://${context.packageName}/$defaultGifResId"
-                    else -> null
-                }
+                val imageData: Any? = resolvedAvatar
                 val isThinking = isCurrentPage && voiceState == VoiceState.Thinking
 
-                // Structured avatars (sprites / atlas / states) flow through
-                // the gateway's node.getCharacterManifest RPC: phone fetches
-                // manifest + asset bytes, publishes via DataClient, watch
-                // feeds DisplayKit's SpriteAnimationPlayer. Plain-URL avatars
-                // and the bundled default GIF render through Coil below.
+                // Structured avatars (sprites / atlas) flow through the
+                // gateway's node.getCharacterManifest RPC + DisplayKit's
+                // SpriteAnimationPlayer. Plain-URL avatars (static PNG / WebP
+                // / JPG) render through AsyncImage below. Animated GIFs are
+                // no longer supported — agents that want motion must use the
+                // sprites or atlas format.
                 val characterManifest = characterManifests[agent.id]
                 val characterAssetBytes = characterAssets[agent.id].orEmpty()
 
@@ -314,45 +295,23 @@ fun AgentDialScreen(viewModel: WearViewModel) {
                         if (isThinking) ThinkingSpinnerOverlay()
                     }
                     imageData != null -> {
-                        val thinkingBytes = (imageData as? ByteArray)?.takeIf { isThinking }
-                        if (thinkingBytes != null) {
-                            // Thinking state: AnimatedImageDrawable with
-                            // repeatCount=0 so the gif plays once end-to-end
-                            // then freezes on the final frame. Re-decodes only
-                            // when bytes identity changes (state swap).
-                            OneShotGif(
-                                bytes = thinkingBytes,
-                                contentDescription = agent.name,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .clip(RoundedCornerShape(32.dp)),
-                            )
-                        } else {
-                            AsyncImage(
-                                model = ImageRequest.Builder(context)
-                                    .data(imageData)
-                                    // Disable Coil's default fade: with per-
-                                    // agent state swaps arriving in quick
-                                    // succession the crossfade momentarily
-                                    // draws outgoing on top of incoming and
-                                    // reads as stacked/ghosted avatars.
-                                    .crossfade(false)
-                                    .memoryCacheKey("avatar:${agent.id}:$agentVersion")
-                                    .build(),
-                                imageLoader = imageLoader,
-                                contentDescription = agent.name,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .clip(RoundedCornerShape(32.dp)),
-                            )
-                        }
+                        AsyncImage(
+                            model = ImageRequest.Builder(context)
+                                .data(imageData)
+                                .memoryCacheKey("avatar:${agent.id}:$agentVersion")
+                                .build(),
+                            contentDescription = agent.name,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(32.dp)),
+                        )
                         if (isThinking) ThinkingSpinnerOverlay()
                     }
                     else -> {
-                        // Fallback: emoji or initials when no image source
-                        // has resolved yet (e.g. bytes haven't landed via
-                        // DataClient, no bundled default_agent.gif shipped).
+                        // Fallback: emoji or initials until structured-avatar
+                        // manifest bytes arrive, or for agents that never
+                        // declare an avatar at all.
                         val label = when {
                             isCurrentPage && voiceState == VoiceState.Listening -> "MIC"
                             isCurrentPage && voiceState == VoiceState.Thinking -> "..."
@@ -448,7 +407,6 @@ fun AgentDialScreen(viewModel: WearViewModel) {
                                     model = ImageRequest.Builder(context)
                                         .data(avatarModel)
                                         .build(),
-                                    imageLoader = imageLoader,
                                     contentDescription = mailAgent.name,
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier

@@ -13,6 +13,7 @@ import ai.openclaw.app.node.CameraCaptureManager
 import ai.openclaw.app.node.CanvasController
 import ai.openclaw.app.node.SmsManager
 import ai.openclaw.app.voice.VoiceConversationEntry
+import ai.openclaw.displaykit.CharacterManifestEnvelope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -76,6 +77,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
   val isConnected: StateFlow<Boolean> = runtimeState(initial = false) { it.isConnected }
   val isNodeConnected: StateFlow<Boolean> = runtimeState(initial = false) { it.nodeConnected }
+
+  /** Agents known to the gateway, for the phone's dial UI. */
+  internal val dialAgents: StateFlow<List<GatewayAgentSummary>> =
+    runtimeState(initial = emptyList()) { it.gatewayAgentsFlow }
+
+  /** Per-agent CharacterManifest envelope from the gateway node.getCharacterManifest RPC. */
+  val characterManifests: StateFlow<Map<String, CharacterManifestEnvelope>> =
+    runtimeState(initial = emptyMap()) { it.agentAvatarSource.characterManifests }
+
+  /** Per-agent asset bytes keyed by manifest.assets.refs entry. */
+  val characterAssets: StateFlow<Map<String, Map<String, ByteArray>>> =
+    runtimeState(initial = emptyMap()) { it.agentAvatarSource.characterAssets }
+
+  /** Current avatar state per agent (`[avatar:X]` markers → state name). */
+  val agentStates: StateFlow<Map<String, String>> =
+    runtimeState(initial = emptyMap()) { it.agentAvatarSource.agentStates }
   val statusText: StateFlow<String> = runtimeState(initial = "Offline") { it.statusText }
   val serverName: StateFlow<String?> = runtimeState(initial = null) { it.serverName }
   val remoteAddress: StateFlow<String?> = runtimeState(initial = null) { it.remoteAddress }
@@ -269,6 +286,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
   fun clearRequestedHomeDestination() {
     _requestedHomeDestination.value = null
+  }
+
+  /**
+   * Navigate to the Chat tab. Called from the agent dial tap handler; the
+   * chat UI picks up its own active-agent state from NodeRuntime so callers
+   * don't need to thread an agent id through here.
+   */
+  fun jumpToChat() {
+    _requestedHomeDestination.value = HomeDestination.Chat
   }
 
   fun clearChatDraft() {

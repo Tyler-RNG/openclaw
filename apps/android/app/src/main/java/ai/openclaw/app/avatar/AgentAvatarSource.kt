@@ -1,0 +1,170 @@
+package ai.openclaw.app.avatar
+
+import android.util.Log
+import ai.openclaw.displaykit.CharacterManifestEnvelope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import org.json.JSONObject
+
+/**
+ * Phone-side unified fetcher + cache for per-agent CharacterManifest
+ * envelopes and their asset bytes. Single source of truth for both
+ * consumers of this data on the phone:
+ *
+ *   - The phone's own AgentDialScreen reads [characterManifests] +
+ *     [characterAssets] + [agentStates] directly.
+ *   - The wear relay pulls pre-fetched entries from [snapshot] when
+ *     publishing to the watch's DataClient, avoiding a second round-trip.
+ *
+ * Fetch policy is explicit: callers invoke [refresh] with an agent-id list
+ * (usually on agents.list refresh / operator connect). An agent already
+ * present in the cache at the same manifest revision is left alone;
+ * revision bumps trigger a re-fetch of changed asset refs only.
+ *
+ * Not a singleton — owned by the NodeRuntime scope so its coroutines die
+ * with the runtime.
+ */
+class AgentAvatarSource(
+    private val scope: CoroutineScope,
+    private val fetchManifest: suspend (agentId: String) -> String?,
+    private val fetchAsset: suspend (relativePath: String) -> ByteArray?,
+) {
+    private val _characterManifests =
+        MutableStateFlow<Map<String, CharacterManifestEnvelope>>(emptyMap())
+    val characterManifests: StateFlow<Map<String, CharacterManifestEnvelope>> =
+        _characterManifests.asStateFlow()
+
+    private val _characterAssets =
+        MutableStateFlow<Map<String, Map<String, ByteArray>>>(emptyMap())
+    val characterAssets: StateFlow<Map<String, Map<String, ByteArray>>> =
+        _characterAssets.asStateFlow()
+
+    private val _agentStates = MutableStateFlow<Map<String, String>>(emptyMap())
+    val agentStates: StateFlow<Map<String, String>> = _agentStates.asStateFlow()
+
+    private val fetchMutex = Mutex()
+
+    /**
+     * Kick off a background fetch for each agent. No-ops for agents whose
+     * manifest is already cached at the current revision. Returns immediately;
+     * the flows update as results land.
+     */
+    fun refresh(agentIds: List<String>) {
+        if (agentIds.isEmpty()) return
+        scope.launch {
+            fetchMutex.withLock {
+                for (agentId in agentIds) {
+                    refreshOne(agentId)
+                }
+            }
+        }
+    }
+
+    /**
+     * Update the current state for an agent. Called by the chat-reply path
+     * when an `[avatar:<state>]` marker fires. Watch still gets its own
+     * state signal via DataClient publishAgentState; this feeds the phone's
+     * own UI.
+     */
+    fun setAgentState(agentId: String, stateName: String) {
+        _agentStates.update { it + (agentId to stateName) }
+    }
+
+    /**
+     * Snapshot of the current cache for the wear relay to iterate when
+     * publishing to the watch. Values are consistent per call; concurrent
+     * cache updates between calls are expected and safe.
+     */
+    fun snapshot(): List<CachedAgent> {
+        val manifests = _characterManifests.value
+        val assets = _characterAssets.value
+        return manifests.map { (agentId, envelope) ->
+            CachedAgent(agentId = agentId, envelope = envelope, assetBytes = assets[agentId].orEmpty())
+        }
+    }
+
+    /**
+     * Drop any cached entries for agents no longer in [keepIds]. Called by
+     * refresh() after a successful pull so removed agents don't linger.
+     */
+    fun retainOnly(keepIds: Collection<String>) {
+        val keep = keepIds.toSet()
+        _characterManifests.update { it.filterKeys { id -> id in keep } }
+        _characterAssets.update { it.filterKeys { id -> id in keep } }
+        _agentStates.update { it.filterKeys { id -> id in keep } }
+    }
+
+    fun clear() {
+        _characterManifests.update { emptyMap() }
+        _characterAssets.update { emptyMap() }
+        _agentStates.update { emptyMap() }
+    }
+
+    // --- internals ---
+
+    private suspend fun refreshOne(agentId: String) {
+        val envelopeJson = fetchManifest(agentId) ?: run {
+            Log.d(TAG, "manifest skip $agentId (no structured avatar or RPC failed)")
+            return
+        }
+        val envelope = CharacterManifestJson.parse(envelopeJson) ?: run {
+            Log.w(TAG, "manifest parse failed $agentId")
+            return
+        }
+        val existing = _characterManifests.value[agentId]
+        if (existing != null && existing.revision == envelope.revision) {
+            return
+        }
+        _characterManifests.update { it + (agentId to envelope) }
+
+        // Asset byte fetch. If a ref failed, leave it out — the dial renders
+        // nothing until all refs are in, then swaps in when ready.
+        val refs = parseAssetRefs(envelopeJson)
+        val bytesByRef = mutableMapOf<String, ByteArray>()
+        for ((refKey, relPath) in refs) {
+            val bytes = fetchAsset(relPath)
+            if (bytes != null) {
+                bytesByRef[refKey] = bytes
+            } else {
+                Log.w(TAG, "asset fetch failed $agentId $refKey")
+            }
+        }
+        _characterAssets.update { it + (agentId to bytesByRef) }
+        Log.d(TAG, "cached $agentId rev=${envelope.revision} (${bytesByRef.size}/${refs.size} assets)")
+    }
+
+    private fun parseAssetRefs(envelopeJson: String): List<Pair<String, String>> {
+        return try {
+            val root = JSONObject(envelopeJson)
+            val manifest = root.optJSONObject("manifest") ?: return emptyList()
+            val assets = manifest.optJSONObject("assets") ?: return emptyList()
+            val refs = assets.optJSONObject("refs") ?: return emptyList()
+            val out = mutableListOf<Pair<String, String>>()
+            val it = refs.keys()
+            while (it.hasNext()) {
+                val k = it.next()
+                val v = refs.optString(k, "").takeIf { it.isNotBlank() } ?: continue
+                out.add(k to v)
+            }
+            out
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
+    data class CachedAgent(
+        val agentId: String,
+        val envelope: CharacterManifestEnvelope,
+        val assetBytes: Map<String, ByteArray>,
+    )
+
+    companion object {
+        private const val TAG = "AgentAvatarSource"
+    }
+}

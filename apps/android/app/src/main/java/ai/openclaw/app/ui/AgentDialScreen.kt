@@ -1,0 +1,242 @@
+package ai.openclaw.app.ui
+
+import android.graphics.Color as AndroidColor
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import ai.openclaw.app.MainViewModel
+
+/**
+ * Phone-side agent dial. Horizontal pager with one page per agent; each page
+ * shows the agent's animated avatar (via DisplayKit through [CharacterAvatar])
+ * with a theme-colored ring, plus emoji fallback until the manifest's asset
+ * bytes arrive from the gateway.
+ *
+ * Functionally mirrors the Wear OS AgentDialScreen but targets phone-screen
+ * layout: single large avatar, no rotary-scroll plumbing, tap-to-chat in
+ * place of the watch's tap-and-hold push-to-talk.
+ */
+@Composable
+fun AgentDialScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
+  val agents by viewModel.dialAgents.collectAsState()
+  val characterManifests by viewModel.characterManifests.collectAsState()
+  val characterAssets by viewModel.characterAssets.collectAsState()
+  val agentStates by viewModel.agentStates.collectAsState()
+
+  if (agents.isEmpty()) {
+    EmptyDial(modifier = modifier)
+    return
+  }
+
+  val pagerState = rememberPagerState(pageCount = { agents.size })
+
+  Box(modifier = modifier.fillMaxSize()) {
+    HorizontalPager(
+      state = pagerState,
+      modifier = Modifier.fillMaxSize(),
+    ) { pageIndex ->
+      val agent = agents[pageIndex]
+      val themeColor = remember(agent.theme) { parseThemeColor(agent.theme) } ?: defaultThemeColor
+      val envelope = characterManifests[agent.id]
+      val assetBytes = characterAssets[agent.id].orEmpty()
+
+      Column(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+      ) {
+        // Theme ring around the avatar — subtle gradient so it feels alive
+        // without competing with the animation.
+        Box(
+          contentAlignment = Alignment.Center,
+          modifier =
+            Modifier
+              .size(280.dp)
+              .border(
+                width = 3.dp,
+                brush =
+                  Brush.radialGradient(
+                    colors = listOf(themeColor, themeColor.copy(alpha = 0.25f), Color.Transparent),
+                  ),
+                shape = CircleShape,
+              )
+              .clickable { viewModel.jumpToChat() },
+        ) {
+          Box(
+            modifier =
+              Modifier
+                .size(248.dp)
+                .clip(RoundedCornerShape(54.dp))
+                .background(themeColor.copy(alpha = 0.08f))
+                .border(2.dp, themeColor.copy(alpha = 0.55f), RoundedCornerShape(54.dp)),
+            contentAlignment = Alignment.Center,
+          ) {
+            if (envelope != null) {
+              CharacterAvatar(
+                agentId = agent.id,
+                envelope = envelope,
+                assetBytes = assetBytes,
+                currentState = agentStates[agent.id],
+                contentDescription = agent.name ?: agent.id,
+                modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(52.dp)),
+              )
+            }
+            // Emoji fallback paints whenever the composable above hasn't
+            // produced a bitmap yet — CharacterAvatar returns null bitmap
+            // until the first frame arrives, and also for agents without a
+            // structured avatar (emoji-only identities).
+            val emoji = agent.emoji
+            if (envelope == null && !emoji.isNullOrBlank()) {
+              Text(
+                text = emoji,
+                fontSize = 92.sp,
+                textAlign = TextAlign.Center,
+              )
+            } else if (envelope == null) {
+              // Last-resort initials (emoji missing too).
+              Text(
+                text = (agent.name ?: agent.id).take(2).uppercase(),
+                fontSize = 64.sp,
+                fontWeight = FontWeight.Bold,
+                color = themeColor,
+              )
+            }
+          }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+        Text(
+          text = agent.name ?: agent.id,
+          fontSize = 24.sp,
+          fontWeight = FontWeight.SemiBold,
+          fontFamily = FontFamily.SansSerif,
+          textAlign = TextAlign.Center,
+        )
+        val subtitle = agent.title
+        if (!subtitle.isNullOrBlank()) {
+          Spacer(modifier = Modifier.height(6.dp))
+          Text(
+            text = subtitle,
+            fontSize = 14.sp,
+            color = Color.Gray,
+            textAlign = TextAlign.Center,
+          )
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        val state = agentStates[agent.id]
+        if (!state.isNullOrBlank()) {
+          Text(
+            text = state,
+            fontSize = 12.sp,
+            color = themeColor,
+            textAlign = TextAlign.Center,
+          )
+        }
+      }
+    }
+
+    // Page indicator dots along the bottom so users know there are more agents
+    // beyond the current page.
+    PageIndicator(
+      pageCount = agents.size,
+      currentPage = pagerState.currentPage,
+      activeColor = run {
+        val active = agents.getOrNull(pagerState.currentPage)
+        remember(active?.theme) { parseThemeColor(active?.theme) } ?: defaultThemeColor
+      },
+      modifier =
+        Modifier
+          .align(Alignment.BottomCenter)
+          .padding(bottom = 24.dp)
+          .fillMaxWidth(),
+    )
+  }
+}
+
+@Composable
+private fun EmptyDial(modifier: Modifier = Modifier) {
+  Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+      Text(
+        text = "No agents yet",
+        fontSize = 18.sp,
+        fontWeight = FontWeight.SemiBold,
+      )
+      Spacer(modifier = Modifier.height(8.dp))
+      Text(
+        text = "Connect to a gateway to see your agents.",
+        fontSize = 14.sp,
+        color = Color.Gray,
+        textAlign = TextAlign.Center,
+      )
+    }
+  }
+}
+
+@Composable
+private fun PageIndicator(
+  pageCount: Int,
+  currentPage: Int,
+  activeColor: Color,
+  modifier: Modifier = Modifier,
+) {
+  androidx.compose.foundation.layout.Row(
+    modifier = modifier,
+    horizontalArrangement = Arrangement.Center,
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    for (i in 0 until pageCount) {
+      val color =
+        if (i == currentPage) activeColor else activeColor.copy(alpha = 0.3f)
+      Box(
+        modifier =
+          Modifier
+            .size(if (i == currentPage) 10.dp else 6.dp)
+            .clip(CircleShape)
+            .background(color),
+      )
+      if (i != pageCount - 1) {
+        Spacer(modifier = Modifier.size(6.dp))
+      }
+    }
+  }
+}
+
+private val defaultThemeColor = Color(0xFF4CFF7E)
+
+private fun parseThemeColor(theme: String?): Color? {
+  if (theme.isNullOrBlank()) return null
+  return try {
+    Color(AndroidColor.parseColor(if (theme.startsWith("#")) theme else "#$theme"))
+  } catch (_: Throwable) {
+    null
+  }
+}

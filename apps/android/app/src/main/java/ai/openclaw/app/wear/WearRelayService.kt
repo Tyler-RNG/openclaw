@@ -772,6 +772,10 @@ class WearRelayService : WearableListenerService() {
     //      the state's GIF bytes to /openclaw/avatars/<id> so Coil swaps.
     val dispatchStateChange: suspend (String) -> Unit = inner@{ stateName ->
       publishAgentState(app, agentId, stateName)
+      // Mirror the swap into the phone's own CharacterManifest cache so the
+      // phone's AgentDialScreen re-ticks the player without needing to
+      // round-trip through DataClient on the same device.
+      app.peekRuntime()?.agentAvatarSource?.setAgentState(agentId, stateName)
       val stateEntry = statesDesc?.states?.get(stateName) ?: return@inner
       publishStateAvatar(app, agentId, stateName, stateEntry)
     }

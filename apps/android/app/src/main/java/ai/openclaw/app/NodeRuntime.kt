@@ -263,6 +263,29 @@ class NodeRuntime(
 
   private var gatewayDefaultAgentId: String? = null
   private var gatewayAgents: List<GatewayAgentSummary> = emptyList()
+
+  /**
+   * StateFlow mirror of [gatewayAgents] for Compose-observing callers (e.g.
+   * the phone's AgentDialScreen). The private field stays for legacy
+   * internal lookups; the flow is published on every refresh.
+   */
+  private val _gatewayAgents = MutableStateFlow<List<GatewayAgentSummary>>(emptyList())
+  internal val gatewayAgentsFlow: StateFlow<List<GatewayAgentSummary>> = _gatewayAgents.asStateFlow()
+
+  /**
+   * Unified CharacterManifest source on the phone. Fed from
+   * refreshAgentsFromGateway() on every agents.list refresh; pulled from by
+   * both the phone's own dial UI and the wear relay when publishing to the
+   * watch. One fetch, two consumers.
+   */
+  internal val agentAvatarSource: ai.openclaw.app.avatar.AgentAvatarSource by lazy {
+    ai.openclaw.app.avatar.AgentAvatarSource(
+      scope = scope,
+      fetchManifest = { agentId -> wearRelayCharacterManifest(agentId) },
+      fetchAsset = { relativePath -> wearRelayAssetBytes(relativePath) },
+    )
+  }
+
   private var didAutoRequestCanvasRehydrate = false
   private val canvasRehydrateSeq = AtomicLong(0)
   private var operatorConnected = false
@@ -1723,7 +1746,13 @@ class NodeRuntime(
           val id = obj["id"].asStringOrNull()?.trim().orEmpty()
           if (id.isEmpty()) return@mapNotNull null
           val name = obj["name"].asStringOrNull()?.trim()
-          val emoji = obj["identity"].asObjectOrNull()?.get("emoji").asStringOrNull()?.trim()
+          val identity = obj["identity"].asObjectOrNull()
+          val emoji = identity?.get("emoji").asStringOrNull()?.trim()
+          val theme = identity?.get("theme").asStringOrNull()?.trim()
+          val title = identity?.get("title").asStringOrNull()?.trim()
+          val avatarUrl =
+            identity?.get("avatarUrl").asStringOrNull()?.trim()
+              ?: identity?.get("avatar").asStringOrNull()?.trim()
           val voice = obj["voice"].asObjectOrNull()
           val voiceProvider = voice?.get("provider").asStringOrNull()?.trim()
           val voiceId = voice?.get("voiceId").asStringOrNull()?.trim()
@@ -1733,6 +1762,9 @@ class NodeRuntime(
             emoji = emoji?.takeIf { it.isNotEmpty() },
             voiceProvider = voiceProvider?.takeIf { it.isNotEmpty() },
             voiceId = voiceId?.takeIf { it.isNotEmpty() },
+            theme = theme?.takeIf { it.isNotEmpty() },
+            title = title?.takeIf { it.isNotEmpty() },
+            avatarUrl = avatarUrl?.takeIf { it.isNotEmpty() },
           )
         } ?: emptyList()
 
@@ -1749,6 +1781,12 @@ class NodeRuntime(
       }
       gatewayDefaultAgentId = defaultAgentId.ifEmpty { null }
       gatewayAgents = agents
+      _gatewayAgents.value = agents
+      // Prime the CharacterManifest cache for any agent the phone's own dial
+      // will want to render, and drop cache entries for agents that vanished.
+      val agentIds = agents.map { it.id }
+      agentAvatarSource.retainOnly(agentIds)
+      agentAvatarSource.refresh(agentIds)
       syncMainSessionKey(resolveAgentIdFromMainSessionKey(mainKey) ?: gatewayDefaultAgentId)
       updateHomeCanvasState()
     } catch (_: Throwable) {
@@ -1967,12 +2005,15 @@ private enum class HomeCanvasGatewayState {
   Offline,
 }
 
-private data class GatewayAgentSummary(
+internal data class GatewayAgentSummary(
   val id: String,
   val name: String?,
   val emoji: String?,
   val voiceProvider: String? = null,
   val voiceId: String? = null,
+  val theme: String? = null,
+  val title: String? = null,
+  val avatarUrl: String? = null,
 )
 
 @Serializable

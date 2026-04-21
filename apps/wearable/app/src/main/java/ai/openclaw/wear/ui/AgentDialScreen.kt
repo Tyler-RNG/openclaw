@@ -57,9 +57,7 @@ import ai.openclaw.wear.VoiceState
 import ai.openclaw.wear.WearViewModel
 import ai.openclaw.wear.characterManifestBytesReady
 import ai.openclaw.wear.protocol.WearAsset
-import ai.openclaw.wear.ui.AtlasAvatar
 import ai.openclaw.wear.ui.CharacterAvatar
-import ai.openclaw.wear.ui.SpriteAvatar
 import android.util.Base64
 import android.util.Log
 import androidx.compose.runtime.LaunchedEffect
@@ -149,9 +147,6 @@ fun AgentDialScreen(viewModel: WearViewModel) {
     val pendingMailJump by viewModel.pendingMailJump.collectAsState()
     val avatarAssets by viewModel.avatarAssets.collectAsState()
     val avatarVersions by viewModel.avatarVersions.collectAsState()
-    val spriteFramesByAgent by viewModel.spriteFrames.collectAsState()
-    val atlasImagesByAgent by viewModel.atlasImages.collectAsState()
-    val atlasManifestsByAgent by viewModel.atlasManifests.collectAsState()
     val agentStates by viewModel.agentStates.collectAsState()
     val characterManifests by viewModel.characterManifests.collectAsState()
     val characterAssets by viewModel.characterAssets.collectAsState()
@@ -295,64 +290,21 @@ fun AgentDialScreen(viewModel: WearViewModel) {
                 }
                 val isThinking = isCurrentPage && voiceState == VoiceState.Thinking
 
-                // Sprite / atlas avatars bypass Coil + the GIF path entirely:
-                // bytes are pre-fetched per-frame (or as an atlas image +
-                // manifest), and AvatarRuntime drives playback timing + loop
-                // modes + phased states locally. See docs/avatars/formats.md.
-                //
-                // TODO(wear-avatar-state-signal): state swaps from `[avatar:X]`
-                // markers currently only reach the watch via the legacy
-                // publishStateAvatar byte-push. For sprites/atlas the phone
-                // should instead publish a `{ state: "<name>" }` DataItem at
-                // `/openclaw/avatars/<id>/state` which the watch observes and
-                // pipes into `runtime.requestState(newState)`. Until that
-                // lands, sprite/atlas agents will play only the default-state
-                // loop. Tracked as a follow-up.
-                val refKind = WearAsset.refKind(agent.avatarUrl)
-                val spritesJson = agent.avatarSpritesJson
-                val atlasBytes = atlasImagesByAgent[agent.id]
-                val atlasManifestLive = atlasManifestsByAgent[agent.id]
-                val spriteFrames = spriteFramesByAgent[agent.id].orEmpty()
+                // Structured avatars (sprites / atlas / states) flow through
+                // the gateway's node.getCharacterManifest RPC: phone fetches
+                // manifest + asset bytes, publishes via DataClient, watch
+                // feeds DisplayKit's SpriteAnimationPlayer. Plain-URL avatars
+                // and the bundled default GIF render through Coil below.
                 val characterManifest = characterManifests[agent.id]
                 val characterAssetBytes = characterAssets[agent.id].orEmpty()
 
                 when {
-                    // New DisplayKit path: CharacterManifest + asset bytes from the
-                    // gateway's node.getCharacterManifest RPC. Unified across
-                    // sprite / atlas / legacy-GIF shapes. Preferred whenever both
-                    // the manifest and its referenced bytes have landed.
                     characterManifest != null &&
                         characterManifestBytesReady(characterManifest, characterAssetBytes) -> {
                         CharacterAvatar(
                             agentId = agent.id,
                             envelope = characterManifest,
                             assetBytes = characterAssetBytes,
-                            currentState = agentStates[agent.id],
-                            contentDescription = agent.name,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clip(RoundedCornerShape(32.dp)),
-                        )
-                        if (isThinking) ThinkingSpinnerOverlay()
-                    }
-                    refKind == "sprites" && spritesJson != null && spriteFrames.isNotEmpty() -> {
-                        SpriteAvatar(
-                            agentId = agent.id,
-                            descriptorJson = spritesJson,
-                            framesByKey = spriteFrames,
-                            currentState = agentStates[agent.id],
-                            contentDescription = agent.name,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clip(RoundedCornerShape(32.dp)),
-                        )
-                        if (isThinking) ThinkingSpinnerOverlay()
-                    }
-                    refKind == "atlas" && atlasBytes != null && atlasManifestLive != null -> {
-                        AtlasAvatar(
-                            agentId = agent.id,
-                            manifestJson = atlasManifestLive,
-                            atlasImageBytes = atlasBytes,
                             currentState = agentStates[agent.id],
                             contentDescription = agent.name,
                             modifier = Modifier

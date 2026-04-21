@@ -19,12 +19,11 @@ import ai.openclaw.wear.BitmapFrameSource
 import ai.openclaw.wear.CharacterManifestJson
 
 /**
- * Unified avatar composable driven by the gateway's CharacterManifest
- * contract and DisplayKit's playback engine. Replaces per-kind
- * [SpriteAvatar]/[AtlasAvatar] with a single code path — the manifest's
- * `content[mode]` table, atlas atlas-ref with crop rects, or flat
- * whole-image refs all flow through [AnimationGraph.fromManifest] and
- * [SpriteAnimationPlayer].
+ * Avatar composable driven by the gateway's CharacterManifest contract and
+ * DisplayKit's playback engine. One code path for all structured agents
+ * (sprites / atlas / states): the manifest's `content[mode]` table, atlas
+ * refs with crop rects, or flat whole-image refs all flow through
+ * [AnimationGraph.fromManifest] and [SpriteAnimationPlayer].
  *
  * The `envelope` and `assetBytes` arguments are published by the phone
  * relay from `node.getCharacterManifest`; the composable decodes bitmaps

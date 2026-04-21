@@ -56,15 +56,6 @@ class WearViewModel(app: Application) : AndroidViewModel(app) {
      */
     val avatarVersions: StateFlow<Map<String, Int>> get() = assetStore.avatarVersions
 
-    /** Sprite-frame bytes, keyed by agentId then by "<state>[/.<phase>]/<NN>". */
-    val spriteFrames: StateFlow<Map<String, Map<String, ByteArray>>> get() = assetStore.spriteFrames
-
-    /** Atlas image bytes, keyed by agentId. */
-    val atlasImages: StateFlow<Map<String, ByteArray>> get() = assetStore.atlasImages
-
-    /** Atlas manifest JSON text, keyed by agentId. */
-    val atlasManifests: StateFlow<Map<String, String>> get() = assetStore.atlasManifests
-
     /** Current avatar state name per agent (phone-driven marker dispatch). */
     val agentStates: StateFlow<Map<String, String>> get() = assetStore.agentStates
 

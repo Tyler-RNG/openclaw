@@ -191,31 +191,25 @@ class WearRelayService : WearableListenerService() {
   }
 
   /**
-   * Rewrites each agent's avatar to a `wear-asset:avatar:<agentId>` reference
-   * and simultaneously publishes the original bytes as a Wearable DataClient
-   * Asset at `/openclaw/avatars/<agentId>`. DataClient has no 100 KB cap and
-   * transfers binary efficiently, so animated GIFs come through intact.
-   * Phone is on Tailscale so it can fetch the sidecar; watch isn't, so it
-   * relies on the Data Layer.
+   * Rewrites each agent's plain-URL avatar to a `wear-asset:avatar:<agentId>`
+   * reference and publishes the bytes as a DataClient Asset at
+   * `/openclaw/avatars/<agentId>`. Only runs for agents whose `identity.avatar`
+   * / `identity.avatarUrl` is a static URL — structured (atlas) avatars flow
+   * through [publishCharacterManifests] instead, which already writes the
+   * atlas image + manifest envelope to the character-manifest paths.
    */
   private suspend fun rewriteAvatars(rawJson: String, app: NodeApp): String {
     return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
       try {
         val root = JSONObject(rawJson)
         val agents = root.optJSONArray("agents") ?: return@withContext rawJson
-        var legacyPublished = 0
-        var legacyFailed = 0
-        var statePublished = 0
-        var stateFailed = 0
-        var statesAgents = 0
-        var agentsSeen = 0
+        var published = 0
+        var failed = 0
         for (i in 0 until agents.length()) {
           val agentObj = agents.optJSONObject(i) ?: continue
           val agentId = agentObj.optString("id", "").trim().ifEmpty { continue }
           val identity = agentObj.optJSONObject("identity") ?: continue
-          agentsSeen++
 
-          // Legacy static avatar: publish bytes if one is configured.
           val key = when {
             identity.optString("avatarUrl", "").isNotBlank() -> "avatarUrl"
             identity.optString("avatar", "").isNotBlank() -> "avatar"
@@ -228,111 +222,18 @@ class WearRelayService : WearableListenerService() {
               val (bytes, mime) = fetched
               if (putAvatarAsset(app, agentId, bytes, mime)) {
                 identity.put(key, WearAsset.buildAvatarRef(agentId))
-                legacyPublished++
+                published++
               } else {
-                legacyFailed++
+                failed++
               }
             } else if (!value.startsWith("data:")) {
-              legacyFailed++
-            }
-          }
-
-          // Capture multi-state descriptor if the sidecar synthesized one.
-          // Runs independent of the legacy-avatar branch so states-only agents
-          // still register their state map.
-          captureAvatarStates(agentId, identity)
-
-          // State-based agents: publish the default-state bytes up front AND
-          // rewrite avatarUrl to a `wear-asset:` reference. Without this, the
-          // watch's resolveAvatarModel() can't find bytes for the agent (it
-          // only reads `avatarUrl`), so the dial would show the bundled
-          // fallback gif even after subsequent state swaps land bytes at
-          // `/openclaw/avatars/<agentId>` — Coil never looks them up without
-          // the `wear-asset:` sentinel on `avatarUrl`.
-          if (identity.has("avatarStates")) {
-            statesAgents++
-            val descriptor = AvatarStatesStore.get(agentId)
-            if (descriptor != null) {
-              AgentAvatarMeta.setDefault(agentId, descriptor.default)
-            }
-            val defaultEntry = descriptor?.states?.get(descriptor.default)
-            if (descriptor != null && defaultEntry != null) {
-              val fetched = fetchStateBytes(app, defaultEntry.file)
-              if (fetched != null) {
-                val (bytes, mime) = fetched
-                AvatarStatesStore.putCachedBytes(
-                  agentId,
-                  descriptor.default,
-                  AvatarStatesStore.CachedAvatar(bytes, mime),
-                )
-                if (putAvatarAsset(app, agentId, bytes, mime)) {
-                  identity.put("avatarUrl", WearAsset.buildAvatarRef(agentId))
-                  statePublished++
-                  WearRelayLog.info(
-                    "agents",
-                    "$agentId default(${descriptor.default}): ${bytes.size / 1024}KB published",
-                  )
-                } else {
-                  stateFailed++
-                }
-              } else {
-                stateFailed++
-                WearRelayLog.warn(
-                  "agents",
-                  "$agentId default(${descriptor.default}): fetch failed (${defaultEntry.file.take(40)})",
-                )
-              }
-            }
-          }
-
-          // Sprite-frames avatar (kind: "sprites"): prefetch every frame file,
-          // publish each on DataClient under /openclaw/avatars/<agentId>/frames/
-          // <state>[/phase]/<NN>. Watch's AvatarRuntime subscribes to the
-          // prefix and drives per-state timing locally. See docs/avatars/formats.md.
-          val spritesObj = identity.optJSONObject("avatarSprites")
-          if (spritesObj != null) {
-            spritesObj.optString("default", "").takeIf { it.isNotBlank() }?.let {
-              AgentAvatarMeta.setDefault(agentId, it)
-            }
-            val published = prefetchSpriteFrames(app, agentId, spritesObj)
-            if (published > 0) {
-              identity.put("avatarUrl", WearAsset.buildSpritesRef(agentId))
-              WearRelayLog.info("agents", "$agentId sprites: $published frames published")
-            }
-          }
-
-          // Sprite-atlas avatar (kind: "atlas"): fetch manifest JSON + its
-          // sibling atlas image, publish both on DataClient. Watch's
-          // AvatarRuntime reads the manifest and slices frames from the atlas
-          // bitmap on each tick.
-          val atlasObj = identity.optJSONObject("avatarAtlas")
-          if (atlasObj != null) {
-            atlasObj.optString("default", "").takeIf { it.isNotBlank() }?.let {
-              AgentAvatarMeta.setDefault(agentId, it)
-            }
-            val ok = prefetchAtlas(app, agentId, atlasObj)
-            if (ok) {
-              identity.put("avatarUrl", WearAsset.buildAtlasRef(agentId))
-              WearRelayLog.info("agents", "$agentId atlas: manifest + image published")
+              failed++
             }
           }
         }
-        if (legacyPublished > 0 || legacyFailed > 0) {
-          WearRelayLog.info(
-            "agents",
-            "legacy avatars: $legacyPublished via asset, $legacyFailed failed",
-          )
+        if (published > 0 || failed > 0) {
+          WearRelayLog.info("agents", "plain avatars: $published via asset, $failed failed")
         }
-        if (statePublished > 0 || stateFailed > 0) {
-          WearRelayLog.info(
-            "agents",
-            "state avatars: $statePublished default frames, $stateFailed failed",
-          )
-        }
-        // Summary line so we can tell at a glance whether the sidecar is
-        // synthesizing avatarStates. If this says "states: 0/N", the sidecar
-        // interim path isn't active for any agent.
-        WearRelayLog.info("agents", "states: $statesAgents/$agentsSeen agents")
         root.toString()
       } catch (_: Throwable) {
         rawJson
@@ -370,202 +271,6 @@ class WearRelayService : WearableListenerService() {
    * invalid entries) so interim-setup issues on the sidecar side are
    * diagnosable from the relay panel alone.
    */
-  private fun captureAvatarStates(agentId: String, identity: JSONObject) {
-    val avatarStates = identity.optJSONObject("avatarStates") ?: run {
-      // Agent reverted to a legacy string avatar — drop any prior descriptor
-      // so we don't inject a stale instruction.
-      if (AvatarStatesStore.get(agentId) != null) {
-        AvatarStatesStore.resetInstructedFlag(agentId)
-        WearRelayLog.info("agents", "$agentId: avatarStates dropped (no longer present)")
-      }
-      return
-    }
-
-    val defaultState = avatarStates.optString("default", "").trim()
-    if (defaultState.isEmpty()) {
-      WearRelayLog.warn("agents", "$agentId: avatarStates missing \"default\"")
-      return
-    }
-    val statesObj = avatarStates.optJSONObject("states") ?: run {
-      WearRelayLog.warn("agents", "$agentId: avatarStates missing \"states\" object")
-      return
-    }
-    val instruction = avatarStates.optString("instruction", "").trim()
-    if (instruction.isEmpty()) {
-      WearRelayLog.warn("agents", "$agentId: avatarStates missing \"instruction\"")
-      return
-    }
-
-    val states = mutableMapOf<String, AvatarStateEntry>()
-    val names = statesObj.keys()
-    var skipped = 0
-    while (names.hasNext()) {
-      val stateName = names.next()
-      val entry = statesObj.optJSONObject(stateName)
-      if (entry == null) {
-        skipped++
-        continue
-      }
-      val file = entry.optString("file", "").trim()
-      if (file.isEmpty()) {
-        skipped++
-        continue
-      }
-      val description = entry.optString("description", "").takeIf { it.isNotBlank() }
-      states[stateName] = AvatarStateEntry(file, description)
-    }
-    if (states.isEmpty()) {
-      WearRelayLog.warn("agents", "$agentId: avatarStates.states empty or all invalid")
-      return
-    }
-    if (!states.containsKey(defaultState)) {
-      WearRelayLog.warn(
-        "agents",
-        "$agentId: default=\"$defaultState\" not in states (${states.keys.joinToString(",")})",
-      )
-      return
-    }
-
-    val prior = AvatarStatesStore.get(agentId)
-    val descriptor = AvatarStatesDescriptor(
-      default = defaultState,
-      states = states,
-      instruction = instruction,
-    )
-    AvatarStatesStore.put(agentId, descriptor)
-    // Instruction text changed → agent gets re-briefed on the next turn so
-    // the model sees the updated roster of states.
-    if (prior != null && prior.instruction != instruction) {
-      AvatarStatesStore.resetInstructedFlag(agentId)
-    }
-    val skippedNote = if (skipped > 0) " ($skipped invalid)" else ""
-    WearRelayLog.info(
-      "agents",
-      "$agentId states: ${states.keys.joinToString(",")} default=$defaultState$skippedNote",
-    )
-  }
-
-  /**
-   * Fetch every frame declared in an `avatarSprites` descriptor and publish
-   * each to a DataClient path the watch's AvatarRuntime can subscribe to.
-   * Returns the number of successfully published frames.
-   *
-   * Wire paths:
-   *   /openclaw/avatars/<agentId>/frames/<state>/<NN>            — single-sequence state
-   *   /openclaw/avatars/<agentId>/frames/<state>/<phase>/<NN>    — phased state
-   */
-  private suspend fun prefetchSpriteFrames(
-    app: NodeApp,
-    agentId: String,
-    spritesObj: JSONObject,
-  ): Int {
-    val basePath = spritesObj.optString("basePath", "").trim().ifEmpty { return 0 }
-    val format = spritesObj.optString("format", "webp").trim().ifEmpty { "webp" }
-    val states = spritesObj.optJSONObject("states") ?: return 0
-
-    var published = 0
-    val stateNames = states.keys()
-    while (stateNames.hasNext()) {
-      val state = stateNames.next()
-      val stateCfg = states.optJSONObject(state) ?: continue
-      // Phased: { intro?, loop, outro? } each with { count, fps, loop, ... }.
-      // Single-sequence: { count, fps, loop, ... } directly on the state.
-      val phased =
-        stateCfg.has("loop") && stateCfg.optJSONObject("loop") != null
-      if (phased) {
-        for (phase in arrayOf("intro", "loop", "outro")) {
-          val phaseCfg = stateCfg.optJSONObject(phase) ?: continue
-          published += publishFrameSequence(
-            app, agentId, basePath, state, phase, phaseCfg, format,
-          )
-        }
-      } else {
-        published += publishFrameSequence(
-          app, agentId, basePath, state, null, stateCfg, format,
-        )
-      }
-    }
-    return published
-  }
-
-  private suspend fun publishFrameSequence(
-    app: NodeApp,
-    agentId: String,
-    basePath: String,
-    state: String,
-    phase: String?,
-    cfg: JSONObject,
-    format: String,
-  ): Int {
-    val count = cfg.optInt("count", 0)
-    if (count <= 0) return 0
-    val digits = if (count >= 100) 3 else 2
-    val phaseSeg = if (phase != null) "/$phase" else ""
-    var published = 0
-    for (i in 0 until count) {
-      val padded = i.toString().padStart(digits, '0')
-      val ref = "$basePath/$state$phaseSeg/$padded.$format"
-      val fetched = fetchStateBytes(app, ref)
-      if (fetched == null) {
-        WearRelayLog.warn(
-          "agents",
-          "$agentId $state${if (phase != null) "/$phase" else ""} frame $padded: fetch failed",
-        )
-        continue
-      }
-      val (bytes, mime) = fetched
-      val dataPath = WearAsset.avatarFramePath(agentId, state, phase, i)
-      if (putDataItemBytes(app, dataPath, bytes, mime)) {
-        published++
-      }
-    }
-    return published
-  }
-
-  /**
-   * Fetch the atlas manifest JSON and its sibling atlas image, publish both
-   * on DataClient. Manifest lives under .../atlas/manifest (mime
-   * application/json); image under .../atlas/image (mime image/webp).
-   */
-  private suspend fun prefetchAtlas(
-    app: NodeApp,
-    agentId: String,
-    atlasObj: JSONObject,
-  ): Boolean {
-    val manifestRef = atlasObj.optString("manifest", "").trim().ifEmpty { return false }
-    val manifestFetched = fetchStateBytes(app, manifestRef) ?: return false
-    val (manifestBytes, _) = manifestFetched
-
-    // Resolve the sibling atlas image path from the manifest's `image` field.
-    val manifestJson = try {
-      JSONObject(String(manifestBytes, Charsets.UTF_8))
-    } catch (e: Throwable) {
-      WearRelayLog.warn("agents", "$agentId atlas: manifest parse failed: ${e.javaClass.simpleName}")
-      return false
-    }
-    val imageName = manifestJson.optString("image", "").trim()
-    if (imageName.isEmpty()) return false
-    val lastSlash = manifestRef.lastIndexOf('/')
-    val imageRef = if (lastSlash >= 0) manifestRef.substring(0, lastSlash + 1) + imageName else imageName
-
-    val imageFetched = fetchStateBytes(app, imageRef) ?: return false
-    val (imageBytes, imageMime) = imageFetched
-
-    val manifestOk = putDataItemBytes(
-      app,
-      WearAsset.atlasManifestPath(agentId),
-      manifestBytes,
-      "application/json",
-    )
-    val imageOk = putDataItemBytes(
-      app,
-      WearAsset.atlasImagePath(agentId),
-      imageBytes,
-      imageMime,
-    )
-    return manifestOk && imageOk
-  }
-
   /**
    * Publish arbitrary bytes at an arbitrary DataClient path as a DataMap
    * containing { data: Asset, mime, ts }. Same schema as putAvatarAsset but
@@ -743,46 +448,20 @@ class WearRelayService : WearableListenerService() {
 
     reply(app, nodeId, PATH_CHAT_STATE, JSONObject().put("state", "thinking").put("agentId", agentId).toString())
 
-    // Multi-state avatar plumbing lives entirely here on the Wear relay path
-    // so generic agent interaction from other entry points (phone chat, other
-    // clients, etc.) is unaffected. We only bother if the sidecar told us
-    // this agent has an `avatarStates` descriptor.
-    val statesDesc = AvatarStatesStore.get(agentId)
-
-    val textForGateway = if (statesDesc != null && !AvatarStatesStore.hasInstructedAgent(agentId)) {
-      AvatarStatesStore.markInstructed(agentId)
-      WearRelayLog.info("chat", "$agentId: injecting avatar-states instruction")
-      buildInstructedMessage(statesDesc, text)
-    } else {
-      text
-    }
-
-    // Interim gateway-driven "thinking" lifecycle cue: the published openclaw
-    // doesn't yet fire avatar.state.change on run start, so we imitate it
-    // from the phone. If the agent has a state named "thinking", flip to it
-    // immediately on dispatch; reset to default when the reply finishes or
-    // the run errors. When the model emits its own markers mid-reply, those
-    // override the thinking frame naturally (last-write-wins on DataClient).
-    // Dispatch an avatar state change through two parallel channels so all
-    // three avatar formats swap correctly on markers:
-    //   1. State signal: small JSON DataItem at /openclaw/avatars/<id>/state.
-    //      Sprite + atlas agents observe this and call runtime.requestState;
-    //      legacy kind:"states" agents also see it but prefer path (2).
-    //   2. Byte push: only meaningful for legacy kind:"states" agents — writes
-    //      the state's GIF bytes to /openclaw/avatars/<id> so Coil swaps.
-    val dispatchStateChange: suspend (String) -> Unit = inner@{ stateName ->
+    // "Thinking" lifecycle cue: the gateway doesn't fire an avatar state
+    // change on run start, so we imitate it from the phone. If the agent's
+    // manifest declares a `thinking` state, DisplayKit swaps to it on
+    // dispatch; otherwise the watch's SpriteAnimationPlayer no-ops. Model
+    // markers emitted mid-reply override the thinking frame naturally
+    // (last-write-wins on the state signal).
+    val dispatchStateChange: suspend (String) -> Unit = { stateName ->
       publishAgentState(app, agentId, stateName)
-      // Mirror the swap into the phone's own CharacterManifest cache so the
-      // phone's AgentDialScreen re-ticks the player without needing to
-      // round-trip through DataClient on the same device.
+      // Mirror the swap into the phone's own AgentAvatarSource cache so the
+      // phone's AgentDialScreen re-ticks its player without needing a
+      // DataClient round-trip on the same device.
       app.peekRuntime()?.agentAvatarSource?.setAgentState(agentId, stateName)
-      val stateEntry = statesDesc?.states?.get(stateName) ?: return@inner
-      publishStateAvatar(app, agentId, stateName, stateEntry)
     }
 
-    // Kick off "thinking" on dispatch. The state signal fires for every
-    // agent kind; the watch-side runtime silently ignores it if the
-    // agent's descriptor has no `thinking` state.
     WearRelayLog.info("chat", "$agentId avatar: thinking (dispatch)")
     WearRelayScope.launch { dispatchStateChange("thinking") }
 
@@ -798,14 +477,15 @@ class WearRelayService : WearableListenerService() {
       if (!markersDispatched.add(stateName)) return@dispatch
       WearRelayScope.launch { dispatchStateChange(stateName) }
     }
-    // The growing-text parser fires mid-stream markers for legacy agents
-    // (sprite/atlas use the state signal instead; their runtime lives on
-    // the watch). Retained for legacy kind:"states" smoothness.
-    val growingMarkerParser = if (statesDesc != null) AvatarMarkerParser() else null
+    // Parse `[avatar:<state>]` markers as they stream in so state swaps
+    // happen mid-reply rather than waiting for the final part. Runs for
+    // every agent — the manifest determines whether the resulting state
+    // signal actually matches a known animation.
+    val growingMarkerParser = AvatarMarkerParser()
 
     val error = runtime.wearRelayChatStream(
       agentId,
-      textForGateway,
+      text,
       onPart = { part ->
       // NodeRuntime already stripped markers from `part.text` and handed
       // us the pre-parsed list on `avatarMarkers`. Re-parsing would find
@@ -844,22 +524,21 @@ class WearRelayService : WearableListenerService() {
       }
       WearRelayLog.info("chat", "$agentId → $kind ${part.text.length}ch$audioTag")
 
-      // Reset to default state on final so the resting pose matches the
-      // idle avatar between runs. Fires for every agent kind via the
-      // state signal; legacy agents also get their default bytes re-pushed.
+      // Reset to the agent's default state on the final part so the
+      // resting pose matches the idle avatar between runs. Default comes
+      // from the cached CharacterManifest on the phone's AgentAvatarSource
+      // (which mirrors DisplayKit's AnimationGraph.fromManifest logic).
       if (part.isFinal) {
-        val defaultState = statesDesc?.default ?: AgentAvatarMeta.getDefault(agentId)
+        val defaultState = app.peekRuntime()?.agentAvatarSource?.defaultStateFor(agentId)
         if (defaultState != null) {
           WearRelayScope.launch { dispatchStateChange(defaultState) }
         }
       }
     },
     onGrowingDelta = { delta ->
-      val parsed = growingMarkerParser?.push(delta)
-      if (parsed != null) {
-        for (marker in parsed.markers) {
-          dispatchMarkerIfNew(marker.state)
-        }
+      val parsed = growingMarkerParser.push(delta)
+      for (marker in parsed.markers) {
+        dispatchMarkerIfNew(marker.state)
       }
     },
     )
@@ -874,73 +553,11 @@ class WearRelayService : WearableListenerService() {
       WearRelayLog.error("chat", error)
       // Reset avatar on error/timeout too — otherwise a stalled gateway
       // leaves the watch on the "thinking" frame forever.
-      val defaultState = statesDesc?.default ?: AgentAvatarMeta.getDefault(agentId)
+      val defaultState = app.peekRuntime()?.agentAvatarSource?.defaultStateFor(agentId)
       if (defaultState != null) {
         WearRelayScope.launch { dispatchStateChange(defaultState) }
       }
     }
-  }
-
-  /**
-   * Prepend the sidecar-supplied avatar-states instruction to the user's first
-   * message of the session. Framed so the model reads it as explicit context
-   * rather than something the user typed. One-time per agent per phone process
-   * — subsequent turns rely on the gateway's conversation history to keep the
-   * briefing in context.
-   */
-  private fun buildInstructedMessage(
-    statesDesc: AvatarStatesDescriptor,
-    userText: String,
-  ): String {
-    val buf = StringBuilder()
-    buf.append(
-      "[Wear client rendering context — do not mention this block in your reply. " +
-          "These are display-only instructions for driving the watch's avatar.]\n",
-    )
-    buf.append(statesDesc.instruction.trim())
-    buf.append("\n\n")
-    buf.append(userText)
-    return buf.toString()
-  }
-
-  /**
-   * Fetch the bytes for a named avatar state and republish them at the agent's
-   * DataClient path, overwriting the prior frame. The watch is already
-   * listening for changes at `/openclaw/avatars/<agentId>` so the swap happens
-   * automatically on its side.
-   *
-   * Results are cached in-memory so a repeat of the same state within a
-   * process lifetime is instant (no re-fetch, no re-publish of identical
-   * bytes to DataClient — the PutDataRequest already de-duplicates but we
-   * skip the network hop anyway).
-   */
-  private suspend fun publishStateAvatar(
-    app: NodeApp,
-    agentId: String,
-    stateName: String,
-    stateEntry: AvatarStateEntry,
-  ) {
-    val cached = AvatarStatesStore.cachedBytes(agentId, stateName)
-    val (bytes, mime) = if (cached != null) {
-      cached.bytes to cached.mime
-    } else {
-      val fetched = fetchStateBytes(app, stateEntry.file)
-      if (fetched == null) {
-        WearRelayLog.warn("chat", "$agentId avatar($stateName): fetch failed (${stateEntry.file.take(40)})")
-        return
-      }
-      AvatarStatesStore.putCachedBytes(
-        agentId,
-        stateName,
-        AvatarStatesStore.CachedAvatar(fetched.first, fetched.second),
-      )
-      fetched
-    }
-    val published = putAvatarAsset(app, agentId, bytes, mime)
-    WearRelayLog.info(
-      "chat",
-      "$agentId avatar($stateName): ${if (published) "swap ${bytes.size / 1024}KB" else "swap failed"}",
-    )
   }
 
   private suspend fun reply(app: NodeApp, nodeId: String, path: String, data: String) {

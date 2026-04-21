@@ -309,23 +309,14 @@ fun AgentDialScreen(viewModel: WearViewModel) {
                         if (isThinking) ThinkingSpinnerOverlay()
                     }
                     else -> {
-                        // Fallback: emoji or initials until structured-avatar
-                        // manifest bytes arrive, or for agents that never
-                        // declare an avatar at all.
-                        val label = when {
-                            isCurrentPage && voiceState == VoiceState.Listening -> "MIC"
-                            isCurrentPage && voiceState == VoiceState.Thinking -> "..."
-                            isCurrentPage && voiceState == VoiceState.Sending -> "..."
-                            isCurrentPage && voiceState == VoiceState.Speaking -> ">>>"
-                            !agent.emoji.isNullOrBlank() -> agent.emoji!!
-                            else -> agent.name.take(2).uppercase()
-                        }
-                        Text(
-                            text = label,
-                            color = agentColor,
-                            fontSize = if (agent.emoji != null) 48.sp else 38.sp,
-                            fontWeight = FontWeight.Black,
-                            fontFamily = FontFamily.Monospace,
+                        // Fallback: solid theme-colored square until the
+                        // structured-avatar manifest bytes land, or for
+                        // agents without a structured avatar. Intentionally
+                        // blank — no emoji, no initials.
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(agentColor.copy(alpha = 0.25f)),
                         )
                     }
                 }

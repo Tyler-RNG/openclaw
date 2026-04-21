@@ -106,6 +106,23 @@ class AgentAvatarSource(
         _agentStates.update { emptyMap() }
     }
 
+    /**
+     * Resolve the default state name for [agentId] from its cached manifest.
+     * Mirrors DisplayKit's AnimationGraph.fromManifest default-state logic:
+     * first stateMap entry whose value is in content.animations, else the
+     * first animation name, else null. Used by the wear relay to reset the
+     * watch's avatar back to idle after a reply completes.
+     */
+    fun defaultStateFor(agentId: String): String? {
+        val envelope = _characterManifests.value[agentId] ?: return null
+        val manifest = envelope.manifest
+        val mode = manifest.modes.firstOrNull { manifest.content.containsKey(it) } ?: return null
+        val animations = manifest.content[mode]?.animations ?: return null
+        val firstFromMap = manifest.stateMap.entries.firstOrNull { animations.containsKey(it.value) }
+        if (firstFromMap != null) return firstFromMap.value
+        return animations.keys.firstOrNull()
+    }
+
     // --- internals ---
 
     private suspend fun refreshOne(agentId: String) {

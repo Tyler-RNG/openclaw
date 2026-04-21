@@ -108,25 +108,15 @@ fun AgentDialScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                 contentDescription = agent.name ?: agent.id,
                 modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(52.dp)),
               )
-            }
-            // Emoji fallback paints whenever the composable above hasn't
-            // produced a bitmap yet — CharacterAvatar returns null bitmap
-            // until the first frame arrives, and also for agents without a
-            // structured avatar (emoji-only identities).
-            val emoji = agent.emoji
-            if (envelope == null && !emoji.isNullOrBlank()) {
-              Text(
-                text = emoji,
-                fontSize = 92.sp,
-                textAlign = TextAlign.Center,
-              )
-            } else if (envelope == null) {
-              // Last-resort initials (emoji missing too).
-              Text(
-                text = (agent.name ?: agent.id).take(2).uppercase(),
-                fontSize = 64.sp,
-                fontWeight = FontWeight.Bold,
-                color = themeColor,
+            } else {
+              // Fallback: solid theme-colored square until the structured-
+              // avatar manifest bytes arrive, or for agents without a
+              // structured avatar. Intentionally blank — no emoji, no
+              // initials.
+              Box(
+                modifier = Modifier
+                  .fillMaxSize()
+                  .background(themeColor.copy(alpha = 0.25f)),
               )
             }
           }

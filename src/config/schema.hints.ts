@@ -90,10 +90,10 @@ const FIELD_PLACEHOLDERS: Record<string, string> = {
   "gateway.push.apns.relay.baseUrl": "https://relay.example.com",
   "channels.mattermost.baseUrl": "https://chat.example.com",
   "agents.list[].identity.avatar": "avatars/openclaw.png",
-  "agents.list[].identity.avatar.kind": "states",
+  "agents.list[].identity.avatar.kind": "atlas",
   "agents.list[].identity.avatar.default": "neutral",
-  "agents.list[].identity.avatar.states.*.file": "avatars/openclaw/happy.gif",
-  "agents.list[].identity.avatar.states.*.description": "warm, supportive",
+  "agents.list[].identity.avatar.manifest": "avatars/openclaw/openclaw.atlas.json",
+  "agents.list[].identity.avatar.descriptions.<state>": "warm, supportive",
 };
 
 const CHANNEL_NAMESPACE_PREFIX = "channels.";

@@ -243,17 +243,15 @@ export const FIELD_HELP: Record<string, string> = {
   "agents.list[].runtime.acp.cwd":
     "Optional default working directory for this agent's ACP sessions.",
   "agents.list[].identity.avatar":
-    "Avatar: either a string (workspace-relative path, http(s) URL, data URI, emoji/short text) or a multi-state object `{ kind: \"states\", default, states: { <name>: { file, description } }, instruction? }`. Multi-state lets the model switch expressions mid-reply via `[avatar:<state>]` markers. See docs/gateway/avatar-states.md.",
+    'Avatar: either a string (workspace-relative path, http(s) URL, data URI, emoji/short text) or an atlas object `{ kind: "atlas", default, manifest, descriptions?, instruction? }`. Atlas lets the model switch expressions mid-reply via `[avatar:<state>]` markers. See docs/avatars/formats.md.',
   "agents.list[].identity.avatar.kind":
-    "Discriminator for multi-state avatars. Must be the literal string \"states\".",
+    'Discriminator for structured avatars. Must be the literal string "atlas".',
   "agents.list[].identity.avatar.default":
-    "Name of the default state rendered when no marker has been emitted yet. Must match a key in `states`.",
-  "agents.list[].identity.avatar.states":
-    "Map from state name (e.g. happy, sad, angry) to `{ file, description }`. State names must match [a-zA-Z0-9_-]+.",
-  "agents.list[].identity.avatar.states.*.file":
-    "File reference for this state. Free-form string — the client resolves it (typical forms: workspace-relative path, /assets/... URL, http(s) URL).",
-  "agents.list[].identity.avatar.states.*.description":
-    "Short description of when the state applies. Surfaced to the model in auto-generated instructions to help it pick the right state.",
+    "Name of the default state rendered when no marker has been emitted yet. Must match an animation defined in the atlas manifest.",
+  "agents.list[].identity.avatar.manifest":
+    "Gateway-relative path to the atlas manifest JSON. The atlas image sits alongside the manifest on disk and is referenced from it.",
+  "agents.list[].identity.avatar.descriptions":
+    "Optional map from state name to a short prompt description, surfaced to the model in the auto-generated instruction. The atlas manifest owns timing and frames; this is purely authoring text.",
   "agents.list[].identity.avatar.instruction":
     "Optional override for the instruction text clients inject on new sessions. When unset, the text is auto-built from the state descriptions.",
   "agents.defaults.heartbeat.suppressToolErrorWarnings":
@@ -1148,7 +1146,7 @@ export const FIELD_HELP: Record<string, string> = {
   "plugins.installs.*.marketplacePlugin":
     "Plugin entry name inside the source marketplace, used for later updates.",
   "agents.list.*.identity.avatar":
-    "Agent avatar: string (workspace-relative path, http(s) URL, data URI, emoji) or multi-state object. See docs/gateway/avatar-states.md.",
+    "Agent avatar: string (workspace-relative path, http(s) URL, data URI, emoji) or atlas object. See docs/avatars/formats.md.",
   "agents.defaults.model.primary": "Primary model (provider/model).",
   "agents.defaults.model.fallbacks":
     "Ordered fallback models (provider/model). Used when the primary model fails.",

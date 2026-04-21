@@ -1,19 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import {
-  isAgentAvatarAtlasConfig,
-  isAgentAvatarSpritesConfig,
-  isAgentAvatarStatesConfig,
-  type AgentAvatarAtlasConfig,
-  type AgentAvatarSpritesConfig,
-  type AgentAvatarStatesConfig,
-} from "../../agents/identity-avatar-states.js";
+import { isAgentAvatarAtlasConfig } from "../../agents/identity-avatar-states.js";
 import { resolveAgentIdentity } from "../../agents/identity.js";
 import { resolveStateDir } from "../../config/paths.js";
 import type {
+  AgentAvatarAtlasConfig,
   AgentAvatarLoopMode,
-  AgentAvatarSpriteSequence,
-  AgentAvatarSpriteState,
   AgentAvatarTransition,
 } from "../../config/types.base.js";
 import type { GatewayHttpAssetsConfig } from "../../config/types.gateway.js";
@@ -30,13 +22,11 @@ type ModeContent = CharacterManifest["content"][string];
 type Animation = ModeContent["animations"][string];
 type FrameSequence = NonNullable<Animation["sequence"]>;
 type FrameRef = FrameSequence["frames"][number];
-type Phase = "intro" | "loop" | "outro";
-type PhaseOrFlat = Phase | null;
 
 type Synthesized = { mode: string; content: ModeContent; assets: Record<string, string> };
 
-const DEFAULT_SPRITE_FPS = 12;
-const DEFAULT_SPRITE_LOOP: AgentAvatarLoopMode = "infinite";
+const DEFAULT_ATLAS_FPS = 12;
+const DEFAULT_ATLAS_LOOP: AgentAvatarLoopMode = "infinite";
 
 export type BuildCharacterManifestResult =
   | { ok: true; manifest: CharacterManifest; revision: number }
@@ -82,16 +72,12 @@ export async function buildCharacterManifest(
     return {
       ok: false,
       code: "no-avatar",
-      message: "agent has no structured avatar (states/sprites/atlas) configured",
+      message: "agent has no structured avatar (atlas) configured",
     };
   }
 
   let synthesized: Synthesized;
-  if (isAgentAvatarStatesConfig(avatar)) {
-    synthesized = synthesizeFromStates(avatar);
-  } else if (isAgentAvatarSpritesConfig(avatar)) {
-    synthesized = synthesizeFromSprites(avatar);
-  } else if (isAgentAvatarAtlasConfig(avatar)) {
+  if (isAgentAvatarAtlasConfig(avatar)) {
     const atlasResult = await synthesizeFromAtlas(avatar, input);
     if (!atlasResult.ok) {
       return atlasResult;
@@ -127,127 +113,6 @@ export async function buildCharacterManifest(
   };
 
   return { ok: true, manifest, revision: computeRevision(manifest) };
-}
-
-// ---------- kind: "states" (legacy GIF) ----------
-
-function synthesizeFromStates(cfg: AgentAvatarStatesConfig): Synthesized {
-  const animations: Record<string, Animation> = {};
-  const refs: Record<string, string> = {};
-  for (const [name, entry] of Object.entries(cfg.states)) {
-    refs[name] = entry.file;
-    animations[name] = {
-      ...(entry.description ? { description: entry.description } : {}),
-      sequence: {
-        frames: [{ ref: name }],
-        fps: DEFAULT_SPRITE_FPS,
-        loop: "infinite",
-      },
-    };
-  }
-  return {
-    mode: DISPLAY_MODE_HEADSHOT,
-    content: { animations },
-    assets: refs,
-  };
-}
-
-// ---------- kind: "sprites" (per-frame images) ----------
-
-function synthesizeFromSprites(cfg: AgentAvatarSpritesConfig): Synthesized {
-  const format = cfg.format ?? "webp";
-  const animations: Record<string, Animation> = {};
-  const refs: Record<string, string> = {};
-
-  for (const [name, rawState] of Object.entries(cfg.states)) {
-    const { description, phases } = unwrapSpriteState(rawState);
-    const anim: Animation = description ? { description } : {};
-    for (const [phase, seq] of phases) {
-      const { sequence, assetRefs } = buildSpriteSequence({
-        stateName: name,
-        phase,
-        seq,
-        basePath: cfg.basePath,
-        format,
-      });
-      Object.assign(refs, assetRefs);
-      if (phase === null) {
-        anim.sequence = sequence;
-      } else {
-        anim[phase] = sequence;
-      }
-    }
-    animations[name] = anim;
-  }
-
-  const content: ModeContent = { animations };
-  if (cfg.transitions && Object.keys(cfg.transitions).length > 0) {
-    content.transitions = translateTransitions(cfg.transitions);
-  }
-
-  return { mode: DISPLAY_MODE_HEADSHOT, content, assets: refs };
-}
-
-function unwrapSpriteState(state: AgentAvatarSpriteState): {
-  description?: string;
-  phases: Array<[PhaseOrFlat, AgentAvatarSpriteSequence]>;
-} {
-  if (isFlatSpriteState(state)) {
-    const { description, ...seq } = state;
-    return { description, phases: [[null, seq]] };
-  }
-  const phases: Array<[PhaseOrFlat, AgentAvatarSpriteSequence]> = [];
-  if (state.intro) {
-    phases.push(["intro", state.intro]);
-  }
-  phases.push(["loop", state.loop]);
-  if (state.outro) {
-    phases.push(["outro", state.outro]);
-  }
-  return { description: state.description, phases };
-}
-
-function isFlatSpriteState(
-  state: AgentAvatarSpriteState,
-): state is AgentAvatarSpriteSequence & { description?: string } {
-  return (
-    typeof (state as AgentAvatarSpriteSequence).count === "number" &&
-    typeof (state as { loop?: unknown }).loop !== "object"
-  );
-}
-
-function buildSpriteSequence(params: {
-  stateName: string;
-  phase: PhaseOrFlat;
-  seq: AgentAvatarSpriteSequence;
-  basePath: string;
-  format: string;
-}): { sequence: FrameSequence; assetRefs: Record<string, string> } {
-  const count = Math.max(1, Math.floor(params.seq.count));
-  const width = count >= 100 ? 3 : 2;
-  const refs: Record<string, string> = {};
-  const frames: FrameRef[] = [];
-  for (let i = 0; i < count; i++) {
-    const padded = String(i).padStart(width, "0");
-    const refKey =
-      params.phase === null
-        ? `${params.stateName}/${padded}`
-        : `${params.stateName}/${params.phase}/${padded}`;
-    const filePath =
-      params.phase === null
-        ? `${params.basePath}/${params.stateName}/${padded}.${params.format}`
-        : `${params.basePath}/${params.stateName}/${params.phase}/${padded}.${params.format}`;
-    refs[refKey] = filePath;
-    frames.push({ ref: refKey });
-  }
-  const sequence: FrameSequence = {
-    frames,
-    fps: params.seq.fps ?? DEFAULT_SPRITE_FPS,
-    loop: params.seq.loop ?? DEFAULT_SPRITE_LOOP,
-    ...(params.seq.holdLastFrame ? { holdLastFrame: true } : {}),
-    ...(typeof params.seq.iterations === "number" ? { iterations: params.seq.iterations } : {}),
-  };
-  return { sequence, assetRefs: refs };
 }
 
 // ---------- kind: "atlas" (packed atlas + sibling JSON) ----------
@@ -441,8 +306,8 @@ function framesToSequence(params: {
   });
   return {
     frames,
-    fps: params.fps ?? DEFAULT_SPRITE_FPS,
-    loop: params.loop ?? DEFAULT_SPRITE_LOOP,
+    fps: params.fps ?? DEFAULT_ATLAS_FPS,
+    loop: params.loop ?? DEFAULT_ATLAS_LOOP,
     ...(params.holdLastFrame ? { holdLastFrame: true } : {}),
     ...(typeof params.iterations === "number" ? { iterations: params.iterations } : {}),
   };

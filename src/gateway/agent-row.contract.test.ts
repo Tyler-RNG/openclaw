@@ -58,7 +58,7 @@ describe("listAgentsForGateway — public agent-row contract", () => {
     });
   });
 
-  test("carries avatar-states descriptor through for state-based agents", () => {
+  test("carries avatar-atlas descriptor through for atlas-based agents", () => {
     const cfg = {
       agents: {
         list: [
@@ -66,11 +66,12 @@ describe("listAgentsForGateway — public agent-row contract", () => {
             id: "ginger",
             identity: {
               avatar: {
-                kind: "states",
+                kind: "atlas",
                 default: "neutral",
-                states: {
-                  neutral: { file: "avatars/ginger/neutral.gif" },
-                  thinking: { file: "avatars/ginger/thinking.gif" },
+                manifest: "avatars/ginger/ginger.atlas.json",
+                descriptions: {
+                  neutral: "resting",
+                  thinking: "processing",
                 },
               },
             },
@@ -81,13 +82,14 @@ describe("listAgentsForGateway — public agent-row contract", () => {
 
     const { agents } = listAgentsForGateway(cfg);
     const ginger = agents.find((a) => a.id === "ginger");
-    expect(ginger?.identity?.avatarStates).toBeDefined();
-    expect(ginger?.identity?.avatarStates?.default).toBe("neutral");
-    expect(ginger?.identity?.avatarStates?.states.neutral?.file).toBe("avatars/ginger/neutral.gif");
-    expect(ginger?.identity?.avatarStates?.states.thinking?.file).toBe(
-      "avatars/ginger/thinking.gif",
-    );
-    expect(ginger?.identity?.avatarStates?.instruction).toBeTruthy();
+    expect(ginger?.identity?.avatarAtlas).toBeDefined();
+    expect(ginger?.identity?.avatarAtlas?.default).toBe("neutral");
+    expect(ginger?.identity?.avatarAtlas?.manifest).toBe("avatars/ginger/ginger.atlas.json");
+    expect(ginger?.identity?.avatarAtlas?.descriptions).toEqual({
+      neutral: "resting",
+      thinking: "processing",
+    });
+    expect(ginger?.identity?.avatarAtlas?.instruction).toBeTruthy();
   });
 
   test("carries per-agent model override through", () => {

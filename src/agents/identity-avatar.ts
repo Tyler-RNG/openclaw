@@ -11,11 +11,6 @@ import {
 import { normalizeOptionalString } from "../shared/string-coerce.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveAgentWorkspaceDir } from "./agent-scope.js";
-import {
-  buildAvatarStateInstruction,
-  isAgentAvatarStatesConfig,
-  type AgentAvatarStatesConfig,
-} from "./identity-avatar-states.js";
 import { loadAgentIdentityFromWorkspace } from "./identity-file.js";
 import { resolveAgentIdentity } from "./identity.js";
 
@@ -23,13 +18,7 @@ export type AgentAvatarResolution =
   | { kind: "none"; reason: string }
   | { kind: "local"; filePath: string }
   | { kind: "remote"; url: string }
-  | { kind: "data"; url: string }
-  | {
-      kind: "states";
-      default: string;
-      states: AgentAvatarStatesConfig["states"];
-      instruction: string;
-    };
+  | { kind: "data"; url: string };
 
 function resolveRawAvatarValue(
   cfg: OpenClawConfig,
@@ -106,15 +95,6 @@ export function resolveAgentAvatar(
   agentId: string,
   opts?: { includeUiOverride?: boolean },
 ): AgentAvatarResolution {
-  const raw = resolveRawAvatarValue(cfg, agentId, opts);
-  if (isAgentAvatarStatesConfig(raw)) {
-    return {
-      kind: "states",
-      default: raw.default,
-      states: raw.states,
-      instruction: buildAvatarStateInstruction(raw),
-    };
-  }
   const source = resolveAvatarSource(cfg, agentId, opts);
   if (!source) {
     return { kind: "none", reason: "missing" };

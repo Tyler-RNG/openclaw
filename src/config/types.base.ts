@@ -276,67 +276,10 @@ export type WebConfig = {
 // Provider docking: allowlists keyed by provider id (and internal "webchat").
 export type AgentElevatedAllowFromConfig = Partial<Record<string, Array<string | number>>>;
 
-export type AgentAvatarStateEntry = {
-  /**
-   * File reference for this state. Free-form string: a workspace-relative path,
-   * an HTTP(S) URL, or any other identifier the client knows how to resolve.
-   * The gateway does not validate or resolve this value on its own.
-   */
-  file: string;
-  /** Short description of when the state applies; used to build the AI instruction. */
-  description?: string;
-};
-
 /**
- * Multi-state avatar config: a set of named states (happy, sad, angry, …) that
- * the model can switch between mid-reply with an inline marker. Clients that
- * understand this config read `agents.list → identity.avatarStates` to learn
- * the state list + rendering targets and to inject the instruction text on new
- * sessions; clients that don't simply fall back to the default avatar.
- */
-export type AgentAvatarStatesConfig = {
-  kind: "states";
-  /** Name of the default state (must exist in `states`). */
-  default: string;
-  /** Map from state name → file + description. */
-  states: Record<string, AgentAvatarStateEntry>;
-  /**
-   * Optional explicit instruction text. When set, replaces the auto-generated
-   * instruction built from the state descriptions.
-   */
-  instruction?: string;
-};
-
-/**
- * Loop mode for sprite-frame / atlas animations. See docs/avatars/formats.md.
+ * Loop mode for atlas animations. See docs/avatars/formats.md.
  */
 export type AgentAvatarLoopMode = "infinite" | "once" | "ping-pong";
-
-/**
- * A single playable sequence — used as the whole state for simple cases, or
- * as a phase (intro / loop / outro) within a phased state.
- */
-export type AgentAvatarSpriteSequence = {
-  /** Number of frames. Files named `<NN>.<format>` under the state's dir. */
-  count: number;
-  fps?: number;
-  loop?: AgentAvatarLoopMode;
-  /** For `loop: "once"`: freeze on the last frame instead of clearing. */
-  holdLastFrame?: boolean;
-  /** For `loop: "ping-pong"`: cap round trips (default: unbounded). */
-  iterations?: number;
-};
-
-export type AgentAvatarSpriteStatePhased = {
-  intro?: AgentAvatarSpriteSequence;
-  loop: AgentAvatarSpriteSequence;
-  outro?: AgentAvatarSpriteSequence;
-  description?: string;
-};
-
-export type AgentAvatarSpriteState =
-  | (AgentAvatarSpriteSequence & { description?: string })
-  | AgentAvatarSpriteStatePhased;
 
 /**
  * Transition entry: either a phase reference string (`"thinking.intro"`) or
@@ -345,29 +288,10 @@ export type AgentAvatarSpriteState =
 export type AgentAvatarTransition = string | { blend: "crossfade"; ms: number };
 
 /**
- * Sprite-frame avatar: individual images per frame, authored in folders under
- * `<basePath>/<state>[/phase]/<NN>.<format>`. Full playback control (fps, loop
- * modes, phased states, transitions). Watch prefetches each frame as its own
- * DataClient item and drives playback via the shared AvatarRuntime.
- */
-export type AgentAvatarSpritesConfig = {
-  kind: "sprites";
-  default: string;
-  /** Gateway-relative dir prefix under the asset endpoint root. */
-  basePath: string;
-  format?: "webp" | "png" | "jpg";
-  states: Record<string, AgentAvatarSpriteState>;
-  transitions?: Record<string, AgentAvatarTransition>;
-  /** Same semantics as AgentAvatarStatesConfig.instruction. */
-  instruction?: string;
-};
-
-/**
  * Sprite-atlas avatar: one packed image + a sibling JSON manifest that names
- * frames and animations. Lowest on-the-wire cost; artists author in sprites
- * (authoring workflow) and run a packer (`pnpm avatar:pack <id>`) to produce
- * the atlas artifact. Runtime uses the manifest exactly like the sprites
- * shape — the only difference is where frame pixels come from.
+ * frames and animations. This is the only structured avatar format the gateway
+ * supports — artists author in frames and run a packer (`pnpm avatar:pack <id>`)
+ * to produce the atlas artifact the runtime consumes.
  */
 export type AgentAvatarAtlasConfig = {
   kind: "atlas";
@@ -376,7 +300,10 @@ export type AgentAvatarAtlasConfig = {
   manifest: string;
   /** Optional per-state prompt descriptions (manifest owns timing + frames). */
   descriptions?: Record<string, string>;
-  /** Same semantics as AgentAvatarStatesConfig.instruction. */
+  /**
+   * Optional explicit instruction text. When set, replaces the auto-generated
+   * instruction built from the state descriptions.
+   */
   instruction?: string;
 };
 
@@ -387,9 +314,7 @@ export type IdentityConfig = {
   /**
    * Avatar shape. See docs/avatars/formats.md for the full spec.
    * - `string`: workspace-relative path, http(s) URL, data URI, or short text / emoji.
-   * - `AgentAvatarStatesConfig` (`kind: "states"`): per-state GIFs (legacy).
-   * - `AgentAvatarSpritesConfig` (`kind: "sprites"`): frame sequences with fps/loop/phases.
    * - `AgentAvatarAtlasConfig` (`kind: "atlas"`): packed sprite atlas + manifest.
    */
-  avatar?: string | AgentAvatarStatesConfig | AgentAvatarSpritesConfig | AgentAvatarAtlasConfig;
+  avatar?: string | AgentAvatarAtlasConfig;
 };

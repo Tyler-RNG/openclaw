@@ -1,6 +1,6 @@
 package ai.openclaw.displaykit
 
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.delay as coroutineDelay
 
 /**
  * Wall clock + scheduler injected into the player so tests can drive playback
@@ -19,7 +19,11 @@ class SystemTicker : Ticker {
     override fun nowMs(): Long = System.currentTimeMillis()
     override suspend fun delay(ms: Long) {
         if (ms > 0L) {
-            delay(ms)
+            // Aliased import — an unqualified `delay(ms)` resolves to this
+            // enclosing member and self-recurses until StackOverflowError.
+            // Tests couldn't catch it because they inject a TestTicker; only
+            // the production SystemTicker path ever exercises this call.
+            coroutineDelay(ms)
         }
     }
 }

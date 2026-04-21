@@ -16,3 +16,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "OpenClawWear"
 include(":app")
+include(":displaykit")
+project(":displaykit").projectDir = file("../shared/OpenClawDisplayKit")

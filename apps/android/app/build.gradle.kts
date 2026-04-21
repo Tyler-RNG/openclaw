@@ -182,6 +182,8 @@ ktlint {
 }
 
 dependencies {
+    implementation(project(":displaykit"))
+
     val composeBom = platform("androidx.compose:compose-bom:2026.02.00")
     implementation(composeBom)
     androidTestImplementation(composeBom)

@@ -17,3 +17,5 @@ dependencyResolutionManagement {
 rootProject.name = "OpenClawNodeAndroid"
 include(":app")
 include(":benchmark")
+include(":displaykit")
+project(":displaykit").projectDir = file("../shared/OpenClawDisplayKit")

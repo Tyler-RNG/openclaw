@@ -38,4 +38,20 @@ object WearAsset {
      * watch's AvatarRuntime ignores unknown state names.
      */
     fun avatarStatePath(agentId: String): String = "$DATA_AVATAR_PATH/$agentId/state"
+
+    /**
+     * DataClient path for the per-agent CharacterManifest JSON envelope
+     * ({manifest, revision}) synthesized by the gateway's
+     * node.getCharacterManifest RPC. Phone publishes this + each
+     * asset-ref's bytes (see [characterManifestAssetPath]); watch
+     * subscribes and drives DisplayKit's SpriteAnimationPlayer via
+     * AnimationGraph.fromManifest(). Supersedes the per-kind sprite
+     * `frames/...` and atlas `atlas/image`/`atlas/manifest` paths once
+     * clients have migrated.
+     */
+    fun characterManifestPath(agentId: String): String =
+        "$DATA_AVATAR_PATH/$agentId/character-manifest"
+
+    fun characterManifestAssetPath(agentId: String, refKey: String): String =
+        "$DATA_AVATAR_PATH/$agentId/character-assets/$refKey"
 }

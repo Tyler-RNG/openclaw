@@ -3,6 +3,7 @@ package ai.openclaw.wear
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import ai.openclaw.displaykit.CharacterManifestEnvelope
 import com.google.android.gms.wearable.DataClient
 import com.google.android.gms.wearable.DataEvent
 import com.google.android.gms.wearable.DataItem
@@ -76,6 +77,25 @@ class WearAssetStore(private val context: Context) {
     private val _agentStates = MutableStateFlow<Map<String, String>>(emptyMap())
     val agentStates: StateFlow<Map<String, String>> = _agentStates.asStateFlow()
 
+    // --- CharacterManifest bundle (DisplayKit path, supersedes sprite/atlas) ---
+    // Phone publishes a JSON envelope at
+    //   /openclaw/avatars/<id>/character-manifest
+    // and each asset ref's bytes at
+    //   /openclaw/avatars/<id>/character-assets/<refKey>
+    // Watch parses both into DisplayKit's CharacterManifestEnvelope + a
+    // per-ref byte map and feeds SpriteAnimationPlayer. These flows coexist
+    // with the legacy sprite/atlas flows during migration; CharacterAvatar
+    // prefers them, SpriteAvatar/AtlasAvatar serves as fallback.
+    private val _characterManifests =
+        MutableStateFlow<Map<String, CharacterManifestEnvelope>>(emptyMap())
+    val characterManifests: StateFlow<Map<String, CharacterManifestEnvelope>> =
+        _characterManifests.asStateFlow()
+
+    private val _characterAssets =
+        MutableStateFlow<Map<String, Map<String, ByteArray>>>(emptyMap())
+    val characterAssets: StateFlow<Map<String, Map<String, ByteArray>>> =
+        _characterAssets.asStateFlow()
+
     private val _tts = MutableStateFlow<Map<String, ByteArray>>(emptyMap())
     val tts: StateFlow<Map<String, ByteArray>> = _tts.asStateFlow()
 
@@ -145,6 +165,21 @@ class WearAssetStore(private val context: Context) {
     }
 
     private fun handleChanged(item: DataItem, path: String) {
+        // Character-manifest envelope path: DataMap carries the JSON string
+        // directly (no Asset indirection), since it's bounded text payload.
+        if (WearAsset.isCharacterManifestPath(path)) {
+            val dm = runCatching { DataMapItem.fromDataItem(item).dataMap }.getOrNull() ?: return
+            val id = path.removePrefix("${WearAsset.DATA_AVATAR_PATH}/").substringBefore('/')
+            val jsonText = dm.getString("manifest") ?: return
+            val envelope = CharacterManifestJson.parse(jsonText)
+            if (envelope != null) {
+                _characterManifests.update { it + (id to envelope) }
+                Log.d(TAG, "manifest $id rev=${envelope.revision}")
+            } else {
+                Log.w(TAG, "manifest parse failed for $id")
+            }
+            return
+        }
         val dm = runCatching { DataMapItem.fromDataItem(item).dataMap }.getOrNull() ?: return
         val asset = dm.getAsset("data") ?: return
         scope.launch {
@@ -152,6 +187,19 @@ class WearAssetStore(private val context: Context) {
                 val fd = dataClient.getFdForAsset(asset).await()
                 val bytes = fd.inputStream.use { it.readBytes() }
                 when {
+                    // Character-asset byte path (DisplayKit):
+                    //   /openclaw/avatars/<agentId>/character-assets/<refKey>
+                    // refKey may contain slashes (sprite keys) or be flat (atlas image).
+                    WearAsset.parseCharacterAssetPath(path) != null -> {
+                        val (id, refKey) = WearAsset.parseCharacterAssetPath(path)!!
+                        _characterAssets.update { current ->
+                            val per = current[id]?.toMutableMap() ?: mutableMapOf()
+                            per[refKey] = bytes
+                            current + (id to per)
+                        }
+                        _avatarVersions.update { it + (id to ((it[id] ?: 0) + 1)) }
+                        Log.d(TAG, "char-asset $id $refKey (${bytes.size}B)")
+                    }
                     // Sprite-frame path:
                     //   /openclaw/avatars/<agentId>/frames/<state>/<NN>
                     //   /openclaw/avatars/<agentId>/frames/<state>/<phase>/<NN>
@@ -204,6 +252,19 @@ class WearAssetStore(private val context: Context) {
 
     private fun handleDeleted(path: String) {
         when {
+            WearAsset.isCharacterManifestPath(path) -> {
+                val id = path.removePrefix("${WearAsset.DATA_AVATAR_PATH}/").substringBefore('/')
+                _characterManifests.update { it - id }
+                _characterAssets.update { it - id }
+            }
+            WearAsset.parseCharacterAssetPath(path) != null -> {
+                val (id, refKey) = WearAsset.parseCharacterAssetPath(path)!!
+                _characterAssets.update { current ->
+                    val per = current[id] ?: return@update current
+                    val updated = per - refKey
+                    if (updated.isEmpty()) current - id else current + (id to updated)
+                }
+            }
             path.startsWith("${WearAsset.DATA_AVATAR_PATH}/") -> {
                 val id = path.removePrefix("${WearAsset.DATA_AVATAR_PATH}/")
                 _avatars.update { it - id }

@@ -68,6 +68,14 @@ class WearViewModel(app: Application) : AndroidViewModel(app) {
     /** Current avatar state name per agent (phone-driven marker dispatch). */
     val agentStates: StateFlow<Map<String, String>> get() = assetStore.agentStates
 
+    /** Per-agent CharacterManifest envelope published by the phone relay. */
+    val characterManifests: StateFlow<Map<String, ai.openclaw.displaykit.CharacterManifestEnvelope>>
+        get() = assetStore.characterManifests
+
+    /** Per-agent `{ refKey → bytes }` map resolved from manifest.assets.refs. */
+    val characterAssets: StateFlow<Map<String, Map<String, ByteArray>>>
+        get() = assetStore.characterAssets
+
     // --- Screen navigation ---
     private val _screen = MutableStateFlow(WearScreen.Connecting)
     val screen: StateFlow<WearScreen> = _screen.asStateFlow()

@@ -26,6 +26,38 @@ object WearAsset {
 
     fun avatarStatePath(agentId: String): String = "$DATA_AVATAR_PATH/$agentId/state"
 
+    /**
+     * DataClient path for the per-agent CharacterManifest JSON envelope
+     * ({manifest, revision}) synthesized by the gateway's
+     * node.getCharacterManifest RPC. Phone publishes this + each
+     * asset-ref's bytes (see [characterManifestAssetPath]); watch
+     * subscribes and drives DisplayKit's SpriteAnimationPlayer via
+     * AnimationGraph.fromManifest(). Supersedes the per-kind sprite
+     * `frames/...` and atlas `atlas/image`/`atlas/manifest` paths once
+     * clients have migrated.
+     */
+    fun characterManifestPath(agentId: String): String =
+        "$DATA_AVATAR_PATH/$agentId/character-manifest"
+
+    fun characterManifestAssetPath(agentId: String, refKey: String): String =
+        "$DATA_AVATAR_PATH/$agentId/character-assets/$refKey"
+
+    /** True if [path] is a character-manifest envelope DataItem path. */
+    fun isCharacterManifestPath(path: String): Boolean {
+        return characterManifestRegex.matches(path)
+    }
+
+    /** True if [path] is a character-asset bytes DataItem path. Returns null if not. */
+    fun parseCharacterAssetPath(path: String): Pair<String, String>? {
+        val m = characterAssetRegex.matchEntire(path) ?: return null
+        return m.groupValues[1] to m.groupValues[2]
+    }
+
+    private val characterManifestRegex =
+        Regex("${Regex.escape(DATA_AVATAR_PATH)}/([^/]+)/character-manifest")
+    private val characterAssetRegex =
+        Regex("${Regex.escape(DATA_AVATAR_PATH)}/([^/]+)/character-assets/(.+)")
+
     private fun stripPrefix(raw: String?, prefix: String): String? {
         if (raw == null || !raw.startsWith(prefix)) return null
         val id = raw.substring(prefix.length)

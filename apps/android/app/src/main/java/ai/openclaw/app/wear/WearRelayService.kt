@@ -89,6 +89,105 @@ class WearRelayService : WearableListenerService() {
     val transformed = rewriteAvatars(rawJson, app)
     reply(app, nodeId, PATH_AGENTS_RESULT, transformed)
     WearRelayLog.info("agents", "list sent")
+    // After the agent-list reply returns, publish each agent's
+    // CharacterManifest + asset bytes asynchronously. The watch's
+    // CharacterAvatar composable prefers this path; legacy sprite/atlas
+    // paths still fire from rewriteAvatars() so rendering keeps working
+    // even if the gateway RPC errors or a single ref fails to fetch.
+    publishCharacterManifests(app, transformed)
+  }
+
+  /**
+   * For each agent in [agentsListJson], call the gateway's
+   * node.getCharacterManifest RPC, publish the manifest envelope as a text
+   * DataItem at `/openclaw/avatars/<id>/character-manifest`, then publish
+   * each referenced asset's bytes at
+   * `/openclaw/avatars/<id>/character-assets/<refKey>`. Agents without a
+   * structured avatar (plain URL, no avatar, unsupported kind) are skipped
+   * silently — the RPC returns an error the watch can't act on anyway.
+   *
+   * All work is best-effort; a failure on one agent or one ref does not
+   * abort the loop. Counters log a per-refresh summary so operators can
+   * tell at a glance whether the new path is wired.
+   */
+  private suspend fun publishCharacterManifests(app: NodeApp, agentsListJson: String) {
+    val runtime = app.peekRuntime() ?: return
+    val root = try { JSONObject(agentsListJson) } catch (_: Throwable) { return }
+    val agentsArr = root.optJSONArray("agents") ?: return
+    var manifests = 0
+    var skipped = 0
+    var assetsPublished = 0
+    var assetsFailed = 0
+    for (i in 0 until agentsArr.length()) {
+      val obj = agentsArr.optJSONObject(i) ?: continue
+      val agentId = obj.optString("id", "").trim().ifEmpty { continue }
+      val envelopeJson = runtime.wearRelayCharacterManifest(agentId)
+      if (envelopeJson == null) {
+        skipped++
+        continue
+      }
+      if (!publishCharacterManifestEnvelope(app, agentId, envelopeJson)) {
+        skipped++
+        continue
+      }
+      manifests++
+      val refs = parseManifestAssetRefs(envelopeJson)
+      for ((refKey, relPath) in refs) {
+        val bytes = runtime.wearRelayAssetBytes(relPath)
+        if (bytes == null) {
+          assetsFailed++
+          continue
+        }
+        if (putDataItemBytes(app, WearAsset.characterManifestAssetPath(agentId, refKey), bytes, guessMimeFromUrl(relPath))) {
+          assetsPublished++
+        } else {
+          assetsFailed++
+        }
+      }
+    }
+    WearRelayLog.info(
+      "agents",
+      "manifests=$manifests skip=$skipped assets=$assetsPublished fail=$assetsFailed",
+    )
+  }
+
+  /** Publish the {manifest, revision} JSON envelope as a text DataItem. */
+  private suspend fun publishCharacterManifestEnvelope(
+    app: NodeApp,
+    agentId: String,
+    envelopeJson: String,
+  ): Boolean {
+    return try {
+      val request = PutDataMapRequest.create(WearAsset.characterManifestPath(agentId)).apply {
+        dataMap.putString("manifest", envelopeJson)
+        dataMap.putLong("ts", System.currentTimeMillis())
+      }.asPutDataRequest().setUrgent()
+      com.google.android.gms.wearable.Wearable.getDataClient(app).putDataItem(request).await()
+      true
+    } catch (e: Throwable) {
+      WearRelayLog.warn("agents", "manifest put $agentId: ${e.javaClass.simpleName}")
+      false
+    }
+  }
+
+  /** Extract `manifest.assets.refs` as `{refKey → relativePath}` from the envelope JSON. */
+  private fun parseManifestAssetRefs(envelopeJson: String): List<Pair<String, String>> {
+    return try {
+      val root = JSONObject(envelopeJson)
+      val manifest = root.optJSONObject("manifest") ?: return emptyList()
+      val assets = manifest.optJSONObject("assets") ?: return emptyList()
+      val refs = assets.optJSONObject("refs") ?: return emptyList()
+      val out = mutableListOf<Pair<String, String>>()
+      val it = refs.keys()
+      while (it.hasNext()) {
+        val k = it.next()
+        val v = refs.optString(k, "").takeIf { it.isNotBlank() } ?: continue
+        out.add(k to v)
+      }
+      out
+    } catch (_: Throwable) {
+      emptyList()
+    }
   }
 
   /**

@@ -45,6 +45,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 
@@ -1118,6 +1119,74 @@ class NodeRuntime(
       operatorSession.request("agents.list", "{}")
     } catch (_: Throwable) {
       null
+    }
+  }
+
+  /**
+   * Fetch the CharacterManifest envelope for [agentId] via the gateway's
+   * `node.getCharacterManifest` RPC. Returns the raw JSON response body on
+   * success, or null if the operator session is offline, the agent has no
+   * structured avatar, or the RPC errors out. The wear relay publishes this
+   * text verbatim to `/openclaw/avatars/<agentId>/character-manifest` so the
+   * watch can parse it through DisplayKit without re-serialization.
+   *
+   * Gateway-side caps filtering comes from the node's advertised `caps` at
+   * pair time; we don't pass a mode filter here so the gateway returns
+   * whatever modes the caps permit.
+   */
+  suspend fun wearRelayCharacterManifest(agentId: String): String? {
+    if (!operatorConnected) return null
+    val params = JSONObject().apply { put("agentId", agentId) }.toString()
+    return try {
+      operatorSession.request("node.getCharacterManifest", params)
+    } catch (_: Throwable) {
+      null
+    }
+  }
+
+  /**
+   * Fetch raw bytes for a manifest asset ref. Paths in
+   * `manifest.assets.refs[k]` are relative to the gateway's asset endpoint
+   * (`GET /openclaw-assets/<relativePath>`). Uses the phone's active
+   * data-plane + auth token. Returns null on any failure; the relay
+   * continues with a partial bundle so one 404 doesn't block the whole
+   * publish.
+   */
+  suspend fun wearRelayAssetBytes(relativePath: String): ByteArray? {
+    if (!operatorConnected) return null
+    val dataPlane = _wearDataPlane.value ?: return null
+    val clean = relativePath.trimStart('/')
+    if (clean.isEmpty()) return null
+    val encoded = clean.split('/').joinToString("/") { segment ->
+      java.net.URLEncoder.encode(segment, Charsets.UTF_8.name()).replace("+", "%20")
+    }
+    val token = wearRelayAuthToken()
+    val url = buildString {
+      append(dataPlane.baseUrl)
+      append("/openclaw-assets/")
+      append(encoded)
+      if (!dataPlane.publicAssets && !token.isNullOrEmpty()) {
+        append("?token=")
+        append(java.net.URLEncoder.encode(token, Charsets.UTF_8.name()))
+      }
+    }
+    return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+      try {
+        val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        conn.connectTimeout = 10_000
+        conn.readTimeout = 20_000
+        conn.requestMethod = "GET"
+        conn.connect()
+        if (conn.responseCode != 200) {
+          conn.disconnect()
+          return@withContext null
+        }
+        val bytes = conn.inputStream.use { it.readBytes() }
+        conn.disconnect()
+        bytes
+      } catch (_: Throwable) {
+        null
+      }
     }
   }
 

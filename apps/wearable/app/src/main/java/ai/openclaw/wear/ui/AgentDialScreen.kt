@@ -55,8 +55,10 @@ import coil3.ImageLoader
 import ai.openclaw.wear.PhoneBridge
 import ai.openclaw.wear.VoiceState
 import ai.openclaw.wear.WearViewModel
+import ai.openclaw.wear.characterManifestBytesReady
 import ai.openclaw.wear.protocol.WearAsset
 import ai.openclaw.wear.ui.AtlasAvatar
+import ai.openclaw.wear.ui.CharacterAvatar
 import ai.openclaw.wear.ui.SpriteAvatar
 import android.util.Base64
 import android.util.Log
@@ -151,6 +153,8 @@ fun AgentDialScreen(viewModel: WearViewModel) {
     val atlasImagesByAgent by viewModel.atlasImages.collectAsState()
     val atlasManifestsByAgent by viewModel.atlasManifests.collectAsState()
     val agentStates by viewModel.agentStates.collectAsState()
+    val characterManifests by viewModel.characterManifests.collectAsState()
+    val characterAssets by viewModel.characterAssets.collectAsState()
 
     // Request focus so rotary events reach this composable
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
@@ -309,8 +313,28 @@ fun AgentDialScreen(viewModel: WearViewModel) {
                 val atlasBytes = atlasImagesByAgent[agent.id]
                 val atlasManifestLive = atlasManifestsByAgent[agent.id]
                 val spriteFrames = spriteFramesByAgent[agent.id].orEmpty()
+                val characterManifest = characterManifests[agent.id]
+                val characterAssetBytes = characterAssets[agent.id].orEmpty()
 
                 when {
+                    // New DisplayKit path: CharacterManifest + asset bytes from the
+                    // gateway's node.getCharacterManifest RPC. Unified across
+                    // sprite / atlas / legacy-GIF shapes. Preferred whenever both
+                    // the manifest and its referenced bytes have landed.
+                    characterManifest != null &&
+                        characterManifestBytesReady(characterManifest, characterAssetBytes) -> {
+                        CharacterAvatar(
+                            agentId = agent.id,
+                            envelope = characterManifest,
+                            assetBytes = characterAssetBytes,
+                            currentState = agentStates[agent.id],
+                            contentDescription = agent.name,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(32.dp)),
+                        )
+                        if (isThinking) ThinkingSpinnerOverlay()
+                    }
                     refKind == "sprites" && spritesJson != null && spriteFrames.isNotEmpty() -> {
                         SpriteAvatar(
                             agentId = agent.id,

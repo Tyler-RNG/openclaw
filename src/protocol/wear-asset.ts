@@ -43,6 +43,25 @@ export function wearAvatarStatePath(agentId: string): string {
   return `${WEAR_DATA_AVATAR_PATH}/${agentId}/state`;
 }
 
+/**
+ * DataClient path for the per-agent CharacterManifest JSON bundle. The phone
+ * calls `node.getCharacterManifest(agentId)` on the gateway, publishes the
+ * envelope (manifest + revision) here, and publishes each asset ref's bytes
+ * under `wearCharacterManifestAssetPath(agentId, refKey)`. Watch subscribes
+ * to both, assembles a ready-to-play bundle, and feeds it to DisplayKit's
+ * `AnimationGraph.fromManifest(...) + SpriteAnimationPlayer`. Supersedes the
+ * per-kind legacy paths (`/frames/...`, `/atlas/image`, `/atlas/manifest`)
+ * once clients have migrated.
+ */
+export function wearCharacterManifestPath(agentId: string): string {
+  return `${WEAR_DATA_AVATAR_PATH}/${agentId}/character-manifest`;
+}
+
+/** Per-asset byte path under the manifest. `refKey` matches `assets.refs` keys. */
+export function wearCharacterManifestAssetPath(agentId: string, refKey: string): string {
+  return `${WEAR_DATA_AVATAR_PATH}/${agentId}/character-assets/${refKey}`;
+}
+
 /** Returns the agentId when `raw` is a well-formed wear-asset avatar ref, else null. */
 export function parseWearAssetAvatarRef(raw: string | null | undefined): string | null {
   if (!raw || !raw.startsWith(WEAR_ASSET_AVATAR_PREFIX)) {

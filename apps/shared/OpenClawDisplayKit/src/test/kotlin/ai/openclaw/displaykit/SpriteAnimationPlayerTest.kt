@@ -37,7 +37,7 @@ class SpriteAnimationPlayerTest {
     ) = Animation(sequence = sequence, intro = intro, loop = loop, outro = outro)
 
     private class TestTicker(private val scope: TestScope) : Ticker {
-        override fun nowMs(): Long = scope.currentTime
+        override fun nowMs(): Long = scope.testScheduler.currentTime
         override suspend fun delay(ms: Long) {
             if (ms > 0L) kotlinx.coroutines.delay(ms)
         }
@@ -195,9 +195,9 @@ class SpriteAnimationPlayerTest {
             transitions = mapOf("*->thinking" to TransitionRef.Phase("thinking.intro")),
         )
         val player = newPlayer(g)
-        advanceUntilIdle()
-
-        // Now in neutral's infinite loop.
+        // Kick past init so the neutral loop has rendered its first frame.
+        // advanceUntilIdle() would hang here — default state is an infinite loop.
+        advanceTimeBy(10)
         val before = player.currentRef.value?.ref
         assertEquals("f0", before)
 
@@ -205,8 +205,9 @@ class SpriteAnimationPlayerTest {
         advanceTimeBy(10)
         // First thing played on transition is thinking.intro f0 (via transition ref).
         assertEquals("f0", player.currentRef.value?.ref)
-        // Then the state is thinking.
-        advanceUntilIdle()
+        // Advance past the transition's ONCE playback (100ms @ 10fps) into the
+        // target state's own loop; target state is now "thinking".
+        advanceTimeBy(300)
         assertEquals("thinking", player.currentState.value)
 
         player.dispose()
@@ -220,11 +221,13 @@ class SpriteAnimationPlayerTest {
             transitions = mapOf("*->*" to TransitionRef.Phase("neutral.intro")),
         )
         val player = newPlayer(g)
-        advanceUntilIdle()
+        // Default state is infinite; advanceTimeBy is the only safe way to
+        // kick past init without hanging on the perpetual frame loop.
+        advanceTimeBy(10)
         val before = player.currentState.value
 
         player.requestState(before)
-        advanceUntilIdle()
+        advanceTimeBy(10)
 
         assertEquals(before, player.currentState.value)
         player.dispose()

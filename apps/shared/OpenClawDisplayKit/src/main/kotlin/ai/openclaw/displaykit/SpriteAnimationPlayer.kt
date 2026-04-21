@@ -49,13 +49,19 @@ class SpriteAnimationPlayer(
      * target state's own loop starts. No-op when already in [target].
      */
     fun requestState(target: String): Job {
+        // Capture the job reference before reassignment. Reading activeJob
+        // from inside the launched block is a race — by the time the block
+        // runs, activeJob has been overwritten to `job` itself, so the old
+        // job (often the init-spawned infinite loop) would never be cancelled.
+        val previousJob = activeJob
         val job = scope.launch {
             if (target == _currentState.value) {
+                previousJob?.cancelAndJoin()
                 return@launch
             }
-            val previous = _currentState.value
-            activeJob?.cancelAndJoin()
-            val transition = graph.resolveTransition(previous, target)
+            val previousState = _currentState.value
+            previousJob?.cancelAndJoin()
+            val transition = graph.resolveTransition(previousState, target)
             if (transition is TransitionRef.Phase) {
                 val resolved = ResolvedTransition.parse(transition.value)
                 playPhase(

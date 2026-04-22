@@ -77,7 +77,11 @@ class MicCaptureManager(
     private const val holdSpeechPossibleSilenceMs = 600_000L
     private const val transcriptIdleFlushMs = 1_600L
     private const val maxConversationEntries = 40
-    private const val pendingRunTimeoutMs = 45_000L
+    // Cold-start model responses (especially via openrouter) can exceed 45s;
+    // keeping the old value caused the phone to time out the runId, auto-
+    // re-send the message on the queue, and then drop the late first-reply
+    // with "chat event dropped: no pendingRunId". 120s covers the slow path.
+    private const val pendingRunTimeoutMs = 120_000L
     private const val holdReleaseDrainMs = 2_500L
   }
 

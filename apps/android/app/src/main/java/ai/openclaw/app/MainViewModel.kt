@@ -334,25 +334,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // If a different agent is currently capturing, stop it first so the
     // recognizer's buffered audio is flushed to that agent (not the new one).
     if (currentlyOn && currentActive != null && currentActive != agentId) {
-      runtime.setMicEnabled(false)
+      runtime.stopHoldMic()
     }
     if (currentActive != agentId) {
       runtime.setActiveAgent(agentId)
     }
-    runtime.setMicEnabled(true)
+    // Route through the hold path so the gateway's ElevenLabs STT (when
+    // configured) gets used instead of the on-device SpeechRecognizer.
+    runtime.startHoldMic()
   }
 
   /**
    * Stop the in-flight voice capture for [agentId]. No-op if the current
    * active agent doesn't match (e.g., the user released after the capture
-   * already naturally completed on silence). The recognizer drains with a
-   * short grace period so a trailing partial transcript still gets sent.
+   * already naturally completed on silence). The hold-release path uploads
+   * the captured audio to the gateway's /stream/stt when available, or
+   * falls back to the SpeechRecognizer drain otherwise.
    */
   fun stopVoiceForAgent(agentId: String) {
     val runtime = ensureRuntime()
     if (activeAgentId.value != agentId) return
     if (!micEnabled.value) return
-    runtime.setMicEnabled(false)
+    runtime.stopHoldMic()
   }
 
   fun clearChatDraft() {

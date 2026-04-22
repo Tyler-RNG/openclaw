@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 
@@ -178,11 +179,22 @@ class PhoneBridge(private val context: Context) : MessageClient.OnMessageReceive
                 val audioBase64 = json.optString("audioBase64", null)?.takeIf { it.isNotBlank() }
                 val audioAssetRef = json.optString("audioAssetRef", null)?.takeIf { it.isNotBlank() }
                 val audioMime = json.optString("audioMime", null)?.takeIf { it.isNotBlank() }
+                val segments = parseAudioSegments(json.optJSONArray("audioSegments"))
 
                 if (err != null) {
                     completion.complete(err)
                 } else {
-                    onReply(ChatReply(replyText, isFinal, audioUrl, audioBase64, audioAssetRef, audioMime))
+                    onReply(
+                        ChatReply(
+                            text = replyText,
+                            isFinal = isFinal,
+                            audioUrl = audioUrl,
+                            audioBase64 = audioBase64,
+                            audioAssetRef = audioAssetRef,
+                            audioMime = audioMime,
+                            audioSegments = segments,
+                        ),
+                    )
                     if (isFinal) completion.complete(null)
                 }
             } catch (e: Throwable) {
@@ -209,6 +221,25 @@ class PhoneBridge(private val context: Context) : MessageClient.OnMessageReceive
         } finally {
             chatReplyHandlers.remove(agentId)
         }
+    }
+
+    private fun parseAudioSegments(arr: JSONArray?): List<ChatAudioSegment>? {
+        if (arr == null || arr.length() == 0) return null
+        val out = ArrayList<ChatAudioSegment>(arr.length())
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i) ?: continue
+            out.add(
+                ChatAudioSegment(
+                    text = obj.optString("text", ""),
+                    emotion = obj.optString("emotion", null)?.takeIf { it.isNotBlank() },
+                    audioUrl = obj.optString("audioUrl", null)?.takeIf { it.isNotBlank() },
+                    audioBase64 = obj.optString("audioBase64", null)?.takeIf { it.isNotBlank() },
+                    audioAssetRef = obj.optString("audioAssetRef", null)?.takeIf { it.isNotBlank() },
+                    audioMime = obj.optString("audioMime", null)?.takeIf { it.isNotBlank() },
+                ),
+            )
+        }
+        return out.takeIf { it.isNotEmpty() }
     }
 
     private suspend fun sendAndWait(
@@ -256,6 +287,28 @@ class PhoneBridge(private val context: Context) : MessageClient.OnMessageReceive
     data class ChatReply(
         val text: String,
         val isFinal: Boolean,
+        val audioUrl: String? = null,
+        val audioBase64: String? = null,
+        val audioAssetRef: String? = null,
+        val audioMime: String? = null,
+        /**
+         * Per-emotion audio segments shipped by the Phase-4 phone relay
+         * (`NodeRuntime.buildWearAudioSegments`). When present and longer
+         * than one entry, the watch plays each segment in order with its
+         * emotion driving avatar state transitions. Older phone builds omit
+         * the field; the watch falls back to the top-level single-blob audio.
+         */
+        val audioSegments: List<ChatAudioSegment>? = null,
+    )
+
+    /**
+     * One emotion-tagged segment of the assistant's TTS reply. `emotion`
+     * is the avatar state that preceded this segment (or null for the
+     * leading segment before any `<<<state>>>` marker).
+     */
+    data class ChatAudioSegment(
+        val text: String,
+        val emotion: String? = null,
         val audioUrl: String? = null,
         val audioBase64: String? = null,
         val audioAssetRef: String? = null,

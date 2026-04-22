@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import ai.openclaw.displaykit.CharacterManifestEnvelope
+import ai.openclaw.displaykit.android.CharacterManifestJson
 import com.google.android.gms.wearable.DataClient
 import com.google.android.gms.wearable.DataEvent
 import com.google.android.gms.wearable.DataItem
@@ -58,6 +59,44 @@ class WearAssetStore(private val context: Context) {
     private val _agentStates = MutableStateFlow<Map<String, String>>(emptyMap())
     val agentStates: StateFlow<Map<String, String>> = _agentStates.asStateFlow()
 
+    /**
+     * Most recent state the PHONE dispatched via DataClient, kept separate
+     * from [_agentStates] because local per-segment overrides also land in
+     * [_agentStates] during segmented playback. [restoreDispatchedState]
+     * reads this to restore the phone's view (which includes the default
+     * "reset to idle" the phone fires on `isFinal`) once playback finishes.
+     */
+    private val _phoneDispatchedStates = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    /**
+     * Locally override the avatar state for [agentId] — used by the wear
+     * audio router to sync avatar animation to per-emotion audio segments
+     * during segmented playback. The phone also dispatches states via
+     * DataClient; last-write-wins on the flow. Safe to call from any
+     * thread — [MutableStateFlow.update] is atomic.
+     *
+     * This does NOT touch [_phoneDispatchedStates]; that tracks only
+     * phone-dispatched state so [restoreDispatchedState] can undo local
+     * per-segment overrides cleanly.
+     */
+    fun setLocalAgentState(agentId: String, stateName: String) {
+        if (agentId.isBlank() || stateName.isBlank()) return
+        _agentStates.update { it + (agentId to stateName) }
+    }
+
+    /**
+     * Re-apply the last state the phone dispatched via DataClient for
+     * [agentId]. Called by the wear audio router after segmented playback
+     * completes so the avatar returns to whatever the phone set (typically
+     * the agent's default/idle state, dispatched on `isFinal`). Silently
+     * no-ops when we haven't yet seen a phone-dispatched state for the agent.
+     */
+    fun restoreDispatchedState(agentId: String) {
+        if (agentId.isBlank()) return
+        val dispatched = _phoneDispatchedStates.value[agentId] ?: return
+        _agentStates.update { it + (agentId to dispatched) }
+    }
+
     // Phone publishes a JSON envelope at
     //   /openclaw/avatars/<id>/character-manifest
     // and each asset ref's bytes at
@@ -93,6 +132,7 @@ class WearAssetStore(private val context: Context) {
                         val stateName = dm?.getString("state")?.takeIf { it.isNotBlank() }
                         if (stateName != null) {
                             _agentStates.update { it + (agentId to stateName) }
+                            _phoneDispatchedStates.update { it + (agentId to stateName) }
                             Log.d(TAG, "state $agentId → $stateName")
                         }
                     } else {

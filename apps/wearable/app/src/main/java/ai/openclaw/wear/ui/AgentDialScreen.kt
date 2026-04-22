@@ -52,7 +52,7 @@ import coil3.request.ImageRequest
 import ai.openclaw.wear.PhoneBridge
 import ai.openclaw.wear.VoiceState
 import ai.openclaw.wear.WearViewModel
-import ai.openclaw.wear.characterManifestBytesReady
+import ai.openclaw.displaykit.android.characterManifestBytesReady
 import ai.openclaw.wear.protocol.WearAsset
 import ai.openclaw.wear.ui.CharacterAvatar
 import android.util.Base64

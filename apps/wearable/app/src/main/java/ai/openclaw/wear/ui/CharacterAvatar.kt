@@ -15,8 +15,8 @@ import androidx.compose.ui.layout.ContentScale
 import ai.openclaw.displaykit.AnimationGraph
 import ai.openclaw.displaykit.CharacterManifestEnvelope
 import ai.openclaw.displaykit.SpriteAnimationPlayer
-import ai.openclaw.wear.BitmapFrameSource
-import ai.openclaw.wear.CharacterManifestJson
+import ai.openclaw.displaykit.android.BitmapFrameSource
+import ai.openclaw.displaykit.android.CharacterManifestJson
 
 /**
  * Avatar composable driven by the gateway's CharacterManifest contract and

@@ -2,23 +2,19 @@ package ai.openclaw.wear
 
 import android.app.Application
 import android.content.Intent
-import android.media.MediaPlayer
+import android.os.Bundle
+import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
-import android.speech.RecognitionListener
-import android.os.Bundle
-import android.speech.tts.TextToSpeech
-import android.util.Base64
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.io.File
-import java.util.Locale
 
 enum class WearScreen { Connecting, Dial }
 
@@ -177,60 +173,83 @@ class WearViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Dispatch a reply's audio through the right channel. Preference order:
-     * DataClient asset (big ElevenLabs) → streamed URL → inline base64 → local
-     * TTS fallback. Each path updates per-agent voiceState on completion.
+     * Dispatch a reply's audio. When the phone sends `audioSegments`
+     * (Phase 4+), we play them sequentially and update the local avatar
+     * state per-segment for lip-sync. Older phone builds arrive with just
+     * the top-level blob fields and play as a single clip.
+     *
+     * Preference for single-blob replies: DataClient asset → streamed URL
+     * → inline base64 → local TTS fallback.
      */
     private fun playReplyAudio(agentId: String, reply: PhoneBridge.ChatReply) {
-        val mime = reply.audioMime ?: "audio/mpeg"
-        when {
-            reply.audioAssetRef != null -> playAssetAudio(agentId, reply.audioAssetRef, mime, reply.text)
-            reply.audioUrl != null -> playStreamedAudio(agentId, reply.audioUrl, mime)
-            reply.audioBase64 != null -> playElevenLabsAudio(agentId, reply.audioBase64, mime)
-            reply.text.isNotBlank() -> speakLocalTts(agentId, reply.text)
-            else -> setAgentVoiceState(agentId, VoiceState.Idle)
+        playbackJob?.cancel()
+        playbackJob = viewModelScope.launch {
+            val segments = reply.audioSegments
+            val usedSegments = !segments.isNullOrEmpty() && segments.size > 1
+            if (usedSegments) {
+                playSegments(agentId, segments!!)
+            } else {
+                playSingle(agentId, reply)
+            }
+            setAgentVoiceState(agentId, VoiceState.Idle)
+            // Segmented playback locally overrides the avatar state per
+            // segment; after the last segment the avatar would otherwise
+            // stay on that emotion until the next turn. Restore whatever
+            // the phone last dispatched (typically its on-`isFinal`
+            // reset-to-default state, which arrived during playback but
+            // was overridden by the per-segment calls above).
+            if (usedSegments) {
+                assetStore.restoreDispatchedState(agentId)
+            }
         }
     }
 
-    /**
-     * Resolve a `wear-asset:tts:<id>` ref to real bytes via the AssetStore,
-     * write to a temp file, play via MediaPlayer. Falls back to local TTS if
-     * the asset never syncs in time.
-     */
-    private fun playAssetAudio(agentId: String, assetRef: String, mime: String, fallbackText: String) {
-        val assetId = assetRef.removePrefix("wear-asset:tts:")
-        viewModelScope.launch {
-            val bytes = assetStore.awaitTts(assetId, timeoutMs = 20_000)
-            if (bytes == null) {
-                Log.w("WearVM", "tts asset $assetId never arrived; falling back to local TTS")
-                if (fallbackText.isNotBlank()) speakLocalTts(agentId, fallbackText)
-                else setAgentVoiceState(agentId, VoiceState.Idle)
-                return@launch
+    private suspend fun playSegments(agentId: String, segments: List<PhoneBridge.ChatAudioSegment>) {
+        for (segment in segments) {
+            if (segment.emotion != null) {
+                assetStore.setLocalAgentState(agentId, segment.emotion)
             }
-            try {
-                val ext = if (mime.contains("mpeg")) ".mp3" else ".wav"
-                val tmpFile = File.createTempFile("tts-asset", ext, getApplication<WearApp>().cacheDir)
-                tmpFile.writeBytes(bytes)
-                mediaPlayer?.release()
-                mediaPlayer = MediaPlayer().apply {
-                    setDataSource(tmpFile.absolutePath)
-                    setOnCompletionListener {
-                        setAgentVoiceState(agentId, VoiceState.Idle)
-                        tmpFile.delete()
-                    }
-                    setOnErrorListener { _, _, _ ->
-                        setAgentVoiceState(agentId, VoiceState.Idle)
-                        tmpFile.delete()
-                        true
-                    }
-                    prepare()
-                    start()
+            val source = sourceForSegment(segment) ?: continue
+            audioRouter.play(source, fallbackText = segment.text)
+        }
+    }
+
+    private suspend fun playSingle(agentId: String, reply: PhoneBridge.ChatReply) {
+        val source = sourceForReply(reply) ?: return
+        audioRouter.play(source, fallbackText = reply.text.takeIf { it.isNotBlank() })
+    }
+
+    private fun sourceForReply(reply: PhoneBridge.ChatReply): WearPlaybackSource? {
+        val mime = reply.audioMime ?: "audio/mpeg"
+        return when {
+            reply.audioAssetRef != null ->
+                WearPlaybackSource.DataClientAsset(reply.audioAssetRef, mime, reply.text)
+            reply.audioUrl != null ->
+                WearPlaybackSource.StreamingUrl(reply.audioUrl, mime)
+            reply.audioBase64 != null ->
+                decodeInlineAudio(reply.audioBase64)?.let {
+                    WearPlaybackSource.InlineBytes(it, mime)
                 }
-            } catch (e: Throwable) {
-                Log.e("WearVM", "asset audio playback failed", e)
-                if (fallbackText.isNotBlank()) speakLocalTts(agentId, fallbackText)
-                else setAgentVoiceState(agentId, VoiceState.Idle)
-            }
+            reply.text.isNotBlank() ->
+                WearPlaybackSource.LocalTts(reply.text)
+            else -> null
+        }
+    }
+
+    private fun sourceForSegment(segment: PhoneBridge.ChatAudioSegment): WearPlaybackSource? {
+        val mime = segment.audioMime ?: "audio/mpeg"
+        return when {
+            segment.audioAssetRef != null ->
+                WearPlaybackSource.DataClientAsset(segment.audioAssetRef, mime, segment.text)
+            segment.audioUrl != null ->
+                WearPlaybackSource.StreamingUrl(segment.audioUrl, mime)
+            segment.audioBase64 != null ->
+                decodeInlineAudio(segment.audioBase64)?.let {
+                    WearPlaybackSource.InlineBytes(it, mime)
+                }
+            segment.text.isNotBlank() ->
+                WearPlaybackSource.LocalTts(segment.text)
+            else -> null
         }
     }
 
@@ -270,23 +289,18 @@ class WearViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // Fallback TTS
-    private var tts: TextToSpeech? = null
-    private var ttsReady = false
-
-    // Audio player for ElevenLabs
-    private var mediaPlayer: MediaPlayer? = null
-
-    init {
-        tts = TextToSpeech(app) { status ->
-            ttsReady = status == TextToSpeech.SUCCESS
-            tts?.language = Locale.US
-        }
-    }
+    private val localTts = LocalTtsEngine(app)
+    private val audioRouter = WearAudioRouter(
+        context = app,
+        assetStore = assetStore,
+        localTts = localTts,
+    )
+    private var playbackJob: Job? = null
 
     override fun onCleared() {
-        tts?.shutdown()
-        mediaPlayer?.release()
+        playbackJob?.cancel()
+        audioRouter.stop()
+        localTts.shutdown()
         super.onCleared()
     }
 
@@ -358,10 +372,7 @@ class WearViewModel(app: Application) : AndroidViewModel(app) {
 
         if (existing == VoiceState.Speaking) {
             // User wants to barge in on this agent — stop its playback.
-            runCatching { mediaPlayer?.stop() }
-            mediaPlayer?.release()
-            mediaPlayer = null
-            runCatching { tts?.stop() }
+            stopPlayback()
         }
 
         if (!micPermissionGranted) {
@@ -512,76 +523,15 @@ class WearViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Stream audio from a URL (typically the gateway's /stream/tts proxy).
-     * First byte plays within ~500 ms because MediaPlayer streams as bytes
-     * arrive — no waiting for the whole synthesis, no 100 KB Data Layer cap.
+     * Abort any in-flight audio playback and local TTS. Called when the
+     * user barges in (push-to-talk while the agent is speaking) and during
+     * teardown. Restores the agent to Idle.
      */
-    private fun playStreamedAudio(agentId: String, url: String, mime: String) {
-        viewModelScope.launch {
-            try {
-                mediaPlayer?.release()
-                mediaPlayer = MediaPlayer().apply {
-                    setDataSource(url)
-                    setOnPreparedListener { it.start() }
-                    setOnCompletionListener {
-                        setAgentVoiceState(agentId, VoiceState.Idle)
-                    }
-                    setOnErrorListener { _, what, extra ->
-                        Log.e("WearVM", "streamed audio error what=$what extra=$extra")
-                        setAgentVoiceState(agentId, VoiceState.Idle)
-                        true
-                    }
-                    prepareAsync()
-                }
-            } catch (e: Throwable) {
-                Log.e("WearVM", "streamed audio setup failed", e)
-                val text = _agentResponseTexts.value[agentId]
-                if (text != null) speakLocalTts(agentId, text) else setAgentVoiceState(agentId, VoiceState.Idle)
-            }
-        }
-    }
-
-    private fun playElevenLabsAudio(agentId: String, base64: String, mime: String) {
-        viewModelScope.launch {
-            try {
-                val bytes = Base64.decode(base64, Base64.DEFAULT)
-                val ext = if (mime.contains("mpeg")) ".mp3" else ".wav"
-                val tmpFile = File.createTempFile("tts", ext, getApplication<WearApp>().cacheDir)
-                tmpFile.writeBytes(bytes)
-
-                mediaPlayer?.release()
-                mediaPlayer = MediaPlayer().apply {
-                    setDataSource(tmpFile.absolutePath)
-                    setOnCompletionListener {
-                        setAgentVoiceState(agentId, VoiceState.Idle)
-                        tmpFile.delete()
-                    }
-                    setOnErrorListener { _, _, _ ->
-                        setAgentVoiceState(agentId, VoiceState.Idle)
-                        tmpFile.delete()
-                        true
-                    }
-                    prepare()
-                    start()
-                }
-            } catch (e: Throwable) {
-                Log.e("WearVM", "ElevenLabs playback failed", e)
-                val text = _agentResponseTexts.value[agentId]
-                if (text != null) speakLocalTts(agentId, text) else setAgentVoiceState(agentId, VoiceState.Idle)
-            }
-        }
-    }
-
-    private fun speakLocalTts(agentId: String, text: String) {
-        if (ttsReady && tts != null) {
-            tts!!.speak(text, TextToSpeech.QUEUE_FLUSH, null, "wear_response_$agentId")
-            viewModelScope.launch {
-                kotlinx.coroutines.delay(maxOf(1500L, text.length * 60L))
-                if (voiceStateOf(agentId) == VoiceState.Speaking) {
-                    setAgentVoiceState(agentId, VoiceState.Idle)
-                }
-            }
-        } else {
+    private fun stopPlayback(agentId: String? = null) {
+        playbackJob?.cancel()
+        playbackJob = null
+        audioRouter.stop()
+        if (agentId != null) {
             setAgentVoiceState(agentId, VoiceState.Idle)
         }
     }

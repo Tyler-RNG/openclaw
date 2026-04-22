@@ -34,6 +34,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.openclaw.app.MainViewModel
+import ai.openclaw.app.voice.VoiceConversationRole
 
 /**
  * Phone-side agent dial. Horizontal pager with one page per agent; each page
@@ -56,6 +57,17 @@ fun AgentDialScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
   val activeAgentId by viewModel.activeAgentId.collectAsState()
   val micIsListening by viewModel.micIsListening.collectAsState()
   val micIsSending by viewModel.micIsSending.collectAsState()
+  val micConversation by viewModel.micConversation.collectAsState()
+
+  // Most recent user + assistant entry from the voice transcript, shown
+  // beneath the active agent so the press-and-hold flow has visible text
+  // feedback without having to leave the dial for the voice tab.
+  val lastUser = remember(micConversation) {
+    micConversation.lastOrNull { it.role == VoiceConversationRole.User }
+  }
+  val lastAssistant = remember(micConversation) {
+    micConversation.lastOrNull { it.role == VoiceConversationRole.Assistant }
+  }
 
   if (agents.isEmpty()) {
     EmptyDial(modifier = modifier)
@@ -176,6 +188,34 @@ fun AgentDialScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
             color = themeColor,
             textAlign = TextAlign.Center,
           )
+        }
+
+        // Transcript preview for the currently-active agent only. Keeps the
+        // inactive pages visually clean; shows the last thing the user said
+        // (muted) and the last assistant reply (highlighted, live while
+        // streaming).
+        if (activeAgentId == agent.id && (lastUser != null || lastAssistant != null)) {
+          Spacer(modifier = Modifier.height(20.dp))
+          lastUser?.let { entry ->
+            Text(
+              text = "You: ${entry.text}",
+              fontSize = 13.sp,
+              color = Color.Gray,
+              textAlign = TextAlign.Center,
+              modifier = Modifier.padding(horizontal = 12.dp),
+            )
+          }
+          lastAssistant?.let { entry ->
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+              text = entry.text,
+              fontSize = 15.sp,
+              color = if (entry.isStreaming) themeColor else Color.White,
+              fontWeight = FontWeight.Normal,
+              textAlign = TextAlign.Center,
+              modifier = Modifier.padding(horizontal = 12.dp),
+            )
+          }
         }
       }
     }

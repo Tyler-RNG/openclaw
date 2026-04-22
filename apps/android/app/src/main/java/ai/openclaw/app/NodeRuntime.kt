@@ -446,6 +446,13 @@ class NodeRuntime(
       currentAgentId = { resolveActiveAgentId().takeIf { it.isNotEmpty() } },
       onBeforeSpeak = { micCapture.pauseForTts() },
       onAfterSpeak = { micCapture.resumeAfterTts() },
+      dispatchAgentState = { stateName ->
+        val activeAgentId = resolveActiveAgentId().takeIf { it.isNotEmpty() }
+        if (activeAgentId != null) {
+          agentAvatarSource.setAgentState(activeAgentId, stateName)
+          PhoneDiagLog.info("avatar", "$activeAgentId ← $stateName (segment)")
+        }
+      },
     ).also { speaker ->
       speaker.setPlaybackEnabled(prefs.speakerEnabled.value)
     }
@@ -462,6 +469,17 @@ class NodeRuntime(
         // Notify MicCaptureManager of the idempotency key *before* the network
         // call so pendingRunId is set before any chat events can arrive.
         onRunIdKnown(idempotencyKey)
+        // Flip the active agent to "thinking" in the phone's avatar cache.
+        // Mirrors the wear-relay "thinking" dispatch so the phone's own dial
+        // shows an in-flight cue while the gateway generates a reply. If the
+        // manifest doesn't declare "thinking", CharacterAvatar no-ops on the
+        // unknown state name. Later chat-reply markers or the default-state
+        // restore in speakAssistantReply replace it.
+        val activeAgentId = resolveActiveAgentId().takeIf { it.isNotEmpty() }
+        if (activeAgentId != null) {
+          agentAvatarSource.setAgentState(activeAgentId, "thinking")
+          PhoneDiagLog.info("avatar", "$activeAgentId ← thinking (phone mic)")
+        }
         val params =
           buildJsonObject {
             put("sessionKey", JsonPrimitive(resolveMainSessionKey()))
@@ -477,7 +495,20 @@ class NodeRuntime(
         // Voice-tab replies should speak through the dedicated reply speaker.
         // Relying on talkMode.ttsOnAllResponses here can drop playback if the
         // chat-event path misses the terminal event for this turn.
+        PhoneDiagLog.info("talk", "bridge → voiceReplySpeaker chars=${text.length}")
         voiceReplySpeaker.speakAssistantReply(text)
+        // After playback: restore the active agent's avatar to its default
+        // state so we don't stay stuck on "thinking" / the final segment's
+        // emotion. Marker-driven state swaps during playAssistant already
+        // fire per-segment; this is the terminal reset.
+        val activeAgentId = resolveActiveAgentId().takeIf { it.isNotEmpty() }
+        if (activeAgentId != null) {
+          val defaultState = agentAvatarSource.defaultStateFor(activeAgentId)
+          if (defaultState != null) {
+            agentAvatarSource.setAgentState(activeAgentId, defaultState)
+            PhoneDiagLog.info("avatar", "$activeAgentId ← $defaultState (speak done)")
+          }
+        }
       },
     )
   }

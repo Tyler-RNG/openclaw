@@ -54,6 +54,13 @@ internal class TalkModeManager(
   private val currentAgentId: () -> String? = { null },
   private val onBeforeSpeak: suspend () -> Unit = {},
   private val onAfterSpeak: suspend () -> Unit = {},
+  /**
+   * Per-segment avatar state dispatch. Called with the emotion state name from
+   * each `<<<state>>>` marker as we enter its segment so the phone's dial
+   * swaps animations in sync with the voice. Null when there is no active
+   * agent or the runtime doesn't wire an avatar cache.
+   */
+  private val dispatchAgentState: (stateName: String) -> Unit = {},
 ) {
   companion object {
     private const val tag = "TalkMode"
@@ -278,7 +285,14 @@ internal class TalkModeManager(
   }
 
   suspend fun speakAssistantReply(text: String) {
-    if (!playbackEnabled) return
+    PhoneDiagLog.info(
+      "talk",
+      "speakAssistantReply entry chars=${text.length} playbackEnabled=$playbackEnabled",
+    )
+    if (!playbackEnabled) {
+      PhoneDiagLog.warn("talk", "speak skipped: playbackEnabled=false (speaker muted in prefs)")
+      return
+    }
     val playbackToken = playbackGeneration.incrementAndGet()
     cancelActivePlayback()
     ensureConfigLoaded()
@@ -683,6 +697,9 @@ internal class TalkModeManager(
     try {
       val started = SystemClock.elapsedRealtime()
       for (segment in segments) {
+        // Swap the dial avatar to this segment's emotion state (if any) just
+        // before speaking so the visual lines up with the voice.
+        segment.emotion?.takeIf { it.isNotBlank() }?.let { dispatchAgentState(it) }
         when (val result = talkSpeaker.synthesizeForPhone(
           text = segment.text,
           baseDirective = directive,
@@ -736,6 +753,10 @@ internal class TalkModeManager(
           }
         }
       if (!claimedPlayback) {
+        PhoneDiagLog.warn(
+          "talk",
+          "playback not claimed: playbackEnabled=$playbackEnabled token=$playbackToken gen=${playbackGeneration.get()}",
+        )
         ensurePlaybackActive(playbackToken)
         return
       }

@@ -1166,6 +1166,15 @@ class NodeRuntime(
     chat.switchSession(sessionKey)
   }
 
+  /**
+   * Switch the phone's active agent. Drives main session key selection
+   * across chat + voice mode + the home canvas so subsequent interactions
+   * target the chosen agent. Pass `null` to reset to the gateway default.
+   */
+  fun setActiveAgent(agentId: String?) {
+    syncMainSessionKey(agentId)
+  }
+
   fun abortChat() {
     chat.abort()
   }

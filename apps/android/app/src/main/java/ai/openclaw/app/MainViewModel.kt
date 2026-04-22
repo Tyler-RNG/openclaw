@@ -289,12 +289,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
   }
 
   /**
-   * Navigate to the Chat tab. Called from the agent dial tap handler; the
-   * chat UI picks up its own active-agent state from NodeRuntime so callers
-   * don't need to thread an agent id through here.
+   * Navigate to the Chat tab. The chat UI picks up its own active-agent
+   * state from NodeRuntime so callers don't need to thread an agent id
+   * through here.
    */
   fun jumpToChat() {
     _requestedHomeDestination.value = HomeDestination.Chat
+  }
+
+  /**
+   * Set the phone's active agent and navigate to the Voice tab. Called
+   * from the agent-dial tap handler so tapping Ginger on the dial opens
+   * a voice line to Ginger specifically. Pass `agentId = null` to jump to
+   * the voice tab without changing the active agent.
+   */
+  fun jumpToVoice(agentId: String? = null) {
+    if (agentId != null) {
+      ensureRuntime().setActiveAgent(agentId)
+    }
+    _requestedHomeDestination.value = HomeDestination.Voice
   }
 
   fun clearChatDraft() {

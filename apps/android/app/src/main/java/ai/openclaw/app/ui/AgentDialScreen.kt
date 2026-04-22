@@ -88,7 +88,7 @@ fun AgentDialScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                   ),
                 shape = CircleShape,
               )
-              .clickable { viewModel.jumpToChat() },
+              .clickable { viewModel.jumpToVoice(agent.id) },
         ) {
           Box(
             modifier =

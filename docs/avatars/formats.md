@@ -109,25 +109,65 @@ Artists typically author in frames locally (using `pnpm avatar:extract` to slice
 
 ### Config (in `openclaw.json`)
 
+The atlas avatar lives under the SpriteCore plugin block, not on the agent's
+`identity.avatar`. Agent identity stays narrow (a string path / URL / emoji);
+anything richer — atlas selection, per-state descriptions, voice — is owned
+by the plugin.
+
 ```jsonc
-"identity": {
-  "avatar": {
-    "kind": "atlas",
-    "manifest": "avatars/ginger/ginger.atlas.json",
-    "default": "neutral",
-    "descriptions": {
-      "neutral":  "resting / listening",
-      "thinking": "processing",
-      "happy":    "warm",
-      "sad":      "sympathy",
-      "angry":    "frustration",
-      "curious":  "uncertain"
+"plugins": {
+  "entries": {
+    "sprite-core": {
+      "enabled": true,
+      "config": {
+        "assets": { "enabled": true, "assetsDir": "./assets" },
+        "agents": {
+          "ginger": {
+            "avatar": {
+              "kind": "atlas",
+              "default": "neutral",
+              "manifest": "avatars/ginger/ginger.atlas.json"
+            },
+            "emotions": {
+              "neutral":  { "description": "resting / listening" },
+              "thinking": { "description": "processing" },
+              "happy":    {
+                "description": "warm",
+                "directive": { "style": 0.6, "speakerBoost": true }
+              },
+              "sad":      {
+                "description": "sympathy",
+                "directive": { "stability": 0.85, "speed": 0.95 }
+              },
+              "angry":    {
+                "description": "frustration",
+                "directive": { "style": 0.85, "stability": 0.2 }
+              },
+              "curious":  { "description": "uncertain" }
+            }
+          }
+        }
+      }
     }
   }
 }
 ```
 
-The gateway dereferences the manifest when building the client descriptor, so per-state descriptions live in config (agent-side authorship) while playback timing / frame layout lives in the atlas manifest (artist-side authorship). This split keeps the artist's atlas independent of the agent's personality language.
+Each emotion entry carries a `description` (feeds the injected system prompt so the model knows what the state is for) and an optional `directive` (per-state TTS voice overrides — `voiceId`, `stability`, `similarity`, `style`, `speakerBoost`, `speed`, `audioTag`). Directive fields are merged field-by-field with the base TalkDirective when the client synthesizes the text segment that follows a `<<<state>>>` marker.
+
+The optional `audioTag` is an inline emotion cue for TTS models that support them — ElevenLabs `eleven_v3` recognizes tags like `[happy]`, `[sad]`, `[excited]`, `[whispers]`, `[laughs]`, `[sighs]`. When set, the client prepends the tag to the segment's text before synthesis (`audioTag: "[happy]"` turns `"great today"` into `"[happy] great today"`). **Only set this when your configured `defaultModel` is `eleven_v3`** — older models (`eleven_turbo_v2`, `eleven_multilingual_v2`) don't understand the tags and will speak the bracketed text aloud.
+
+The legacy `prompting.descriptions` shape is still honored as a fallback for states whose emotion entry has no description, giving operators a soft migration window. New agents should use `emotions` directly.
+
+The gateway dereferences the manifest when building the client descriptor, so per-state descriptions live in plugin config (agent-side authorship) while playback timing / frame layout lives in the atlas manifest (artist-side authorship). This split keeps the artist's atlas independent of the agent's personality language.
+
+See `extensions/sprite-core/README.md` for the full plugin config reference and the default `agent` template that ships with the plugin.
+
+### Marker syntax
+
+The model signals emotion changes by wrapping the state name in triple angle brackets: `<<<happy>>>`, `<<<thinking>>>`, `<<<sad>>>`. Markers may appear inline mid-sentence or on their own line; the gateway strips them from the visible text and emits them as state-change events so clients can drive avatar animation and per-segment TTS voice selection.
+
+The `<<<…>>>` escape is deliberately unusual so the model is unlikely to emit it by accident. The vocabulary is only injected into the system prompt for sessions whose connected client advertises a sprite display capability (`display:sprite-headshot` or `display:sprite-fullbody`); dashboards, Telegram, and headless sessions do not see the marker instructions even when the plugin is installed.
 
 ### Frame name convention
 

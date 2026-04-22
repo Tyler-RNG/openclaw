@@ -276,45 +276,16 @@ export type WebConfig = {
 // Provider docking: allowlists keyed by provider id (and internal "webchat").
 export type AgentElevatedAllowFromConfig = Partial<Record<string, Array<string | number>>>;
 
-/**
- * Loop mode for atlas animations. See docs/avatars/formats.md.
- */
-export type AgentAvatarLoopMode = "infinite" | "once" | "ping-pong";
-
-/**
- * Transition entry: either a phase reference string (`"thinking.intro"`) or
- * a blend descriptor that the runtime applies during the state swap.
- */
-export type AgentAvatarTransition = string | { blend: "crossfade"; ms: number };
-
-/**
- * Sprite-atlas avatar: one packed image + a sibling JSON manifest that names
- * frames and animations. This is the only structured avatar format the gateway
- * supports — artists author in frames and run a packer (`pnpm avatar:pack <id>`)
- * to produce the atlas artifact the runtime consumes.
- */
-export type AgentAvatarAtlasConfig = {
-  kind: "atlas";
-  default: string;
-  /** Gateway-relative path to the manifest JSON, sibling to the atlas image. */
-  manifest: string;
-  /** Optional per-state prompt descriptions (manifest owns timing + frames). */
-  descriptions?: Record<string, string>;
-  /**
-   * Optional explicit instruction text. When set, replaces the auto-generated
-   * instruction built from the state descriptions.
-   */
-  instruction?: string;
-};
-
 export type IdentityConfig = {
   name?: string;
   theme?: string;
   emoji?: string;
   /**
-   * Avatar shape. See docs/avatars/formats.md for the full spec.
-   * - `string`: workspace-relative path, http(s) URL, data URI, or short text / emoji.
-   * - `AgentAvatarAtlasConfig` (`kind: "atlas"`): packed sprite atlas + manifest.
+   * Workspace-relative path, http(s) URL, data URI, or short text / emoji.
+   * Multi-state sprite avatars (atlas + manifest + per-state prompting) live
+   * in the SpriteCore plugin block under
+   * `plugins.entries["sprite-core"].config.agents.<id>.avatar`. See
+   * `extensions/sprite-core/README.md` and `docs/avatars/formats.md`.
    */
-  avatar?: string | AgentAvatarAtlasConfig;
+  avatar?: string;
 };

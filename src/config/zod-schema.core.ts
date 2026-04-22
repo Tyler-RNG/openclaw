@@ -376,24 +376,16 @@ export const DmConfigSchema = z
   })
   .strict();
 
-// Atlas avatar format. Canonical spec lives in docs/avatars/formats.md —
-// update that doc whenever this schema changes.
-const AvatarAtlasConfigSchema = z
-  .object({
-    kind: z.literal("atlas"),
-    default: z.string(),
-    manifest: z.string(),
-    descriptions: z.record(z.string(), z.string()).optional(),
-    instruction: z.string().optional(),
-  })
-  .strict();
-
+// Avatar narrowed to string-only on the agent identity. Multi-state sprite
+// avatars live in the SpriteCore plugin block — see
+// `extensions/sprite-core/openclaw.plugin.json` and
+// `docs/avatars/formats.md`.
 export const IdentitySchema = z
   .object({
     name: z.string().optional(),
     theme: z.string().optional(),
     emoji: z.string().optional(),
-    avatar: z.union([z.string(), AvatarAtlasConfigSchema]).optional(),
+    avatar: z.string().optional(),
   })
   .strict()
   .optional();

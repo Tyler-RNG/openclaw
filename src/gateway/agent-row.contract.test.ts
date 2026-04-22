@@ -11,31 +11,6 @@ import { listAgentsForGateway } from "./session-utils.js";
 // below; the list is the public contract.
 
 describe("listAgentsForGateway — public agent-row contract", () => {
-  test("carries per-agent voice through to the wire", () => {
-    const cfg = {
-      agents: {
-        list: [
-          {
-            id: "ginger",
-            voice: {
-              provider: "elevenlabs",
-              voiceId: "FGY2WhTYpPnrIDTdsKH5",
-              label: "Laura",
-            },
-          },
-        ],
-      },
-    } as OpenClawConfig;
-
-    const { agents } = listAgentsForGateway(cfg);
-    const ginger = agents.find((a) => a.id === "ginger");
-    expect(ginger?.voice).toEqual({
-      provider: "elevenlabs",
-      voiceId: "FGY2WhTYpPnrIDTdsKH5",
-      label: "Laura",
-    });
-  });
-
   test("carries per-agent identity (name, emoji, theme) through", () => {
     const cfg = {
       agents: {
@@ -58,23 +33,17 @@ describe("listAgentsForGateway — public agent-row contract", () => {
     });
   });
 
-  test("carries avatar-atlas descriptor through for atlas-based agents", () => {
+  test("avatar field on agent identity stays a string after the SpriteCore migration", () => {
+    // The agent's identity.avatar is now string-only. Multi-state sprite
+    // avatars + per-state prompting live in the SpriteCore plugin and are
+    // delivered to clients via /sprite-core/agents and the
+    // node.getCharacterManifest RPC, not via the gateway agent row.
     const cfg = {
       agents: {
         list: [
           {
             id: "ginger",
-            identity: {
-              avatar: {
-                kind: "atlas",
-                default: "neutral",
-                manifest: "avatars/ginger/ginger.atlas.json",
-                descriptions: {
-                  neutral: "resting",
-                  thinking: "processing",
-                },
-              },
-            },
+            identity: { avatar: "avatars/ginger.png" },
           },
         ],
       },
@@ -82,14 +51,7 @@ describe("listAgentsForGateway — public agent-row contract", () => {
 
     const { agents } = listAgentsForGateway(cfg);
     const ginger = agents.find((a) => a.id === "ginger");
-    expect(ginger?.identity?.avatarAtlas).toBeDefined();
-    expect(ginger?.identity?.avatarAtlas?.default).toBe("neutral");
-    expect(ginger?.identity?.avatarAtlas?.manifest).toBe("avatars/ginger/ginger.atlas.json");
-    expect(ginger?.identity?.avatarAtlas?.descriptions).toEqual({
-      neutral: "resting",
-      thinking: "processing",
-    });
-    expect(ginger?.identity?.avatarAtlas?.instruction).toBeTruthy();
+    expect(ginger?.identity?.avatar).toBe("avatars/ginger.png");
   });
 
   test("carries per-agent model override through", () => {
@@ -115,12 +77,16 @@ describe("listAgentsForGateway — public agent-row contract", () => {
     });
   });
 
-  test("omits voice when not configured (no synthetic defaults)", () => {
+  test("does not carry per-agent voice on the core row (plugin owns voice now)", () => {
+    // Voice moved end-to-end to the SpriteCore plugin. Clients (phone, watch)
+    // fetch per-agent voice from GET /sprite-core/agents instead of reading
+    // it off the gateway agent row. The core agent row has no voice field at
+    // the type level and must not accidentally surface one at runtime either.
     const cfg = {
       agents: { list: [{ id: "bare" }] },
     } as OpenClawConfig;
 
     const { agents } = listAgentsForGateway(cfg);
-    expect(agents[0]?.voice).toBeUndefined();
+    expect("voice" in (agents[0] ?? {})).toBe(false);
   });
 });

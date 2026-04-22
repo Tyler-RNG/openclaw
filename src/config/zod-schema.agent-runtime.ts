@@ -860,17 +860,6 @@ export const AgentEntrySchema = z
     params: z.record(z.string(), z.unknown()).optional(),
     tools: AgentToolsSchema,
     runtime: AgentRuntimeSchema,
-    // Per-agent voice/TTS descriptor surfaced to clients (watch, phone) so
-    // they can pick a provider + voice id for this agent. Treated as
-    // passthrough here — shape is client-driven and may evolve.
-    voice: z
-      .object({
-        provider: z.string().optional(),
-        voiceId: z.string().optional(),
-        label: z.string().optional(),
-      })
-      .passthrough()
-      .optional(),
   })
   .strict();
 

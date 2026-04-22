@@ -105,7 +105,8 @@ const BASE_METHODS = [
   "node.rename",
   "node.list",
   "node.describe",
-  "node.getCharacterManifest",
+  // "node.getCharacterManifest" is registered by the SpriteCore plugin
+  // (extensions/sprite-core/index.ts) and intentionally absent here.
   "node.pending.drain",
   "node.pending.enqueue",
   "node.invoke",

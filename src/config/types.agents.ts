@@ -119,17 +119,6 @@ export type AgentConfig = {
   tools?: AgentToolsConfig;
   /** Optional runtime descriptor for this agent. */
   runtime?: AgentRuntimeConfig;
-  /**
-   * Optional per-agent voice / TTS descriptor surfaced to clients (watch,
-   * phone) so they can pick a provider + voice id for this agent. Shape is
-   * client-driven so extra keys are allowed.
-   */
-  voice?: {
-    provider?: string;
-    voiceId?: string;
-    label?: string;
-    [key: string]: unknown;
-  };
 };
 
 export type AgentsConfig = {

@@ -8,10 +8,6 @@ import {
 } from "../agents/agent-scope.js";
 import { lookupContextTokens, resolveContextTokensForModel } from "../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
-import {
-  buildAvatarAtlasInstruction,
-  isAgentAvatarAtlasConfig,
-} from "../agents/identity-avatar-states.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import {
   inferUniqueProviderFromConfiguredModels,
@@ -667,17 +663,17 @@ export function listAgentsForGateway(cfg: OpenClawConfig): {
     {
       name?: string;
       identity?: GatewayAgentRow["identity"];
-      voice?: GatewayAgentRow["voice"];
     }
   >();
   for (const entry of cfg.agents?.list ?? []) {
     if (!entry?.id) {
       continue;
     }
-    const avatarRaw = entry.identity?.avatar;
-    const avatarAtlasCfg = isAgentAvatarAtlasConfig(avatarRaw) ? avatarRaw : null;
-    const avatarStringValue =
-      typeof avatarRaw === "string" ? normalizeOptionalString(avatarRaw) : undefined;
+    // Avatar narrowed to string-only on the agent identity. Multi-state sprite
+    // avatars + per-state prompting live in the SpriteCore plugin and are
+    // delivered to clients via /sprite-core/agents and the
+    // node.getCharacterManifest RPC.
+    const avatarStringValue = normalizeOptionalString(entry.identity?.avatar);
     const identity = entry.identity
       ? {
           name: normalizeOptionalString(entry.identity.name),
@@ -685,24 +681,11 @@ export function listAgentsForGateway(cfg: OpenClawConfig): {
           emoji: normalizeOptionalString(entry.identity.emoji),
           avatar: avatarStringValue,
           avatarUrl: resolveIdentityAvatarUrl(cfg, normalizeAgentId(entry.id), avatarStringValue),
-          ...(avatarAtlasCfg
-            ? {
-                avatarAtlas: {
-                  default: avatarAtlasCfg.default,
-                  manifest: avatarAtlasCfg.manifest,
-                  ...(avatarAtlasCfg.descriptions
-                    ? { descriptions: avatarAtlasCfg.descriptions }
-                    : {}),
-                  instruction: buildAvatarAtlasInstruction(avatarAtlasCfg),
-                },
-              }
-            : {}),
         }
       : undefined;
     configuredById.set(normalizeAgentId(entry.id), {
       name: normalizeOptionalString(entry.name),
       identity,
-      voice: entry.voice,
     });
   }
   const explicitIds = new Set(
@@ -726,7 +709,6 @@ export function listAgentsForGateway(cfg: OpenClawConfig): {
       identity: meta?.identity,
       workspace: resolveAgentWorkspaceDir(cfg, id),
       ...(model ? { model } : {}),
-      ...(meta?.voice ? { voice: meta.voice } : {}),
     };
   });
   return { defaultId, mainKey, scope, agents };

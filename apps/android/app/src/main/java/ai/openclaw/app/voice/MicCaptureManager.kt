@@ -254,6 +254,10 @@ class MicCaptureManager(
   fun handleGatewayEvent(event: String, payloadJson: String?) {
     if (event != "chat") return
     if (payloadJson.isNullOrBlank()) return
+    // Raw-arrival log (before any filtering) — tells us whether the
+    // gateway is emitting chat events at all when the phone isn't
+    // receiving replies.
+    PhoneDiagLog.incoming("mic", "chat event bytes=${payloadJson.length}")
     val payload =
       try {
         json.parseToJsonElement(payloadJson).asObjectOrNull()
@@ -261,11 +265,23 @@ class MicCaptureManager(
         null
       } ?: return
 
-    val runId = pendingRunId ?: run { Log.d("MicCapture", "no pendingRunId — drop"); return }
+    val runId = pendingRunId ?: run {
+      Log.d("MicCapture", "no pendingRunId — drop")
+      PhoneDiagLog.warn("mic", "chat event dropped: no pendingRunId (mic not armed?)")
+      return
+    }
     val eventRunId = payload["runId"].asStringOrNull() ?: return
-    if (eventRunId != runId) { Log.d("MicCapture", "runId mismatch: event=$eventRunId pending=$runId"); return }
+    if (eventRunId != runId) {
+      Log.d("MicCapture", "runId mismatch: event=$eventRunId pending=$runId")
+      PhoneDiagLog.warn(
+        "mic",
+        "chat event dropped: runId event=${eventRunId.take(8)} pending=${runId.take(8)}",
+      )
+      return
+    }
 
-    when (payload["state"].asStringOrNull()) {
+    val state = payload["state"].asStringOrNull()
+    when (state) {
       "delta" -> {
         val deltaText = parseAssistantText(payload)
         if (!deltaText.isNullOrBlank()) {
@@ -274,6 +290,11 @@ class MicCaptureManager(
       }
       "final" -> {
         val finalText = parseAssistantText(payload)?.trim().orEmpty()
+        PhoneDiagLog.incoming(
+          "mic",
+          "chat final chars=${finalText.length}" +
+            if (finalText.isNotEmpty()) " \"${finalText.take(40)}${if (finalText.length > 40) "…" else ""}\"" else "",
+        )
         if (finalText.isNotEmpty()) {
           upsertPendingAssistant(text = finalText, isStreaming = false)
           playAssistantReplyAsync(finalText)
@@ -284,12 +305,19 @@ class MicCaptureManager(
       }
       "error" -> {
         val errorMessage = payload["errorMessage"].asStringOrNull()?.trim().orEmpty().ifEmpty { "Voice request failed" }
+        PhoneDiagLog.error("mic", "chat error: ${errorMessage.take(60)}")
         upsertPendingAssistant(text = errorMessage, isStreaming = false)
         completePendingTurn()
       }
       "aborted" -> {
+        PhoneDiagLog.warn("mic", "chat aborted")
         upsertPendingAssistant(text = "Response aborted", isStreaming = false)
         completePendingTurn()
+      }
+      else -> {
+        if (!state.isNullOrBlank()) {
+          PhoneDiagLog.info("mic", "chat event state=$state")
+        }
       }
     }
   }
@@ -436,6 +464,7 @@ class MicCaptureManager(
 
     scope.launch {
       try {
+        PhoneDiagLog.outgoing("mic", "chat.send chars=${next.length}")
         val runId = sendToGateway(next) { earlyRunId ->
           // Called with the idempotency key before chat.send fires so that
           // pendingRunId is populated before any chat events can arrive.
@@ -444,6 +473,7 @@ class MicCaptureManager(
         // Update to the real runId if the gateway returned a different one.
         if (runId != null && runId != pendingRunId) pendingRunId = runId
         if (runId == null) {
+          PhoneDiagLog.warn("mic", "chat.send returned null runId — send dropped")
           pendingRunTimeoutJob?.cancel()
           pendingRunTimeoutJob = null
           removeFirstQueuedMessage()
@@ -452,9 +482,11 @@ class MicCaptureManager(
           pendingAssistantEntryId = null
           sendQueuedIfIdle()
         } else {
+          PhoneDiagLog.info("mic", "chat.send runId=${runId.take(8)} armed")
           armPendingRunTimeout(runId)
         }
       } catch (err: Throwable) {
+        PhoneDiagLog.error("mic", "chat.send threw: ${err.message?.take(60) ?: err::class.simpleName}")
         pendingRunTimeoutJob?.cancel()
         pendingRunTimeoutJob = null
         _isSending.value = false

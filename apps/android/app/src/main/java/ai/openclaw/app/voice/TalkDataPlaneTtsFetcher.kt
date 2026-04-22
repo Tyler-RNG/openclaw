@@ -39,11 +39,14 @@ internal class TalkDataPlaneTtsFetcher(
         logLabel: String = "chat",
     ): RawTtsAudio? = withContext(Dispatchers.IO) {
         try {
-            val url = buildUrl(baseUrl, voiceId, text, token, emotionOverride)
+            val url = buildUrl(baseUrl, voiceId, text, emotionOverride)
             val conn = URL(url).openConnection() as HttpURLConnection
             conn.connectTimeout = 5_000
             conn.readTimeout = 30_000
             conn.requestMethod = "GET"
+            // Gateway plugin HTTP auth reads the `Authorization` header
+            // only — query params are ignored.
+            conn.setRequestProperty("Authorization", "Bearer $token")
             val code = conn.responseCode
             if (code != 200) {
                 WearRelayLog.warn(logLabel, "data-plane tts HTTP $code")
@@ -111,16 +114,13 @@ internal class TalkDataPlaneTtsFetcher(
         baseUrl: String,
         voiceId: String,
         text: String,
-        token: String,
         emotionOverride: EmotionTtsOverride?,
     ): String {
         val voiceEnc = URLEncoder.encode(voiceId, Charsets.UTF_8.name())
         val textEnc = URLEncoder.encode(text, Charsets.UTF_8.name())
-        val tokenEnc = URLEncoder.encode(token, Charsets.UTF_8.name())
         val base = StringBuilder("${baseUrl.trimEnd('/')}/stream/tts")
             .append("?voice=").append(voiceEnc)
             .append("&text=").append(textEnc)
-            .append("&token=").append(tokenEnc)
         if (emotionOverride != null) {
             emotionOverride.stability?.let { base.append("&stability=").append(it) }
             emotionOverride.similarity?.let { base.append("&similarity=").append(it) }

@@ -1253,21 +1253,20 @@ class NodeRuntime(
       java.net.URLEncoder.encode(segment, Charsets.UTF_8.name()).replace("+", "%20")
     }
     val token = wearRelayAuthToken()
-    val url = buildString {
-      append(dataPlane.baseUrl)
-      append("/openclaw-assets/")
-      append(encoded)
-      if (!dataPlane.publicAssets && !token.isNullOrEmpty()) {
-        append("?token=")
-        append(java.net.URLEncoder.encode(token, Charsets.UTF_8.name()))
-      }
-    }
+    val url = "${dataPlane.baseUrl}/openclaw-assets/$encoded"
     return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
       try {
         val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
         conn.connectTimeout = 10_000
         conn.readTimeout = 20_000
         conn.requestMethod = "GET"
+        // Gateway's plugin HTTP auth reads `Authorization: Bearer <token>`
+        // ONLY — query params are ignored. `publicAssets=false` means we
+        // must provide the token here or the gateway returns 401 before
+        // the route handler runs.
+        if (!dataPlane.publicAssets && !token.isNullOrEmpty()) {
+          conn.setRequestProperty("Authorization", "Bearer $token")
+        }
         conn.connect()
         if (conn.responseCode != 200) {
           PhoneDiagLog.warn(

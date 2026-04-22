@@ -309,15 +309,37 @@ fun AgentDialScreen(viewModel: WearViewModel) {
                         if (isThinking) ThinkingSpinnerOverlay()
                     }
                     else -> {
-                        // Fallback: solid theme-colored square until the
-                        // structured-avatar manifest bytes land, or for
-                        // agents without a structured avatar. Intentionally
-                        // blank — no emoji, no initials.
+                        // No atlas and no image URL: fall back to the agent's
+                        // emoji, or the first letter of their name tinted in
+                        // theme color when no emoji is set. Keeps the avatar
+                        // slot non-blank so the user always has a visual
+                        // identifier even for misconfigured agents.
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(agentColor.copy(alpha = 0.25f)),
-                        )
+                                .background(agentColor.copy(alpha = 0.08f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            val emoji = agent.emoji?.takeIf { it.isNotBlank() }
+                            if (emoji != null) {
+                                Text(
+                                    text = emoji,
+                                    fontSize = 64.sp,
+                                )
+                            } else {
+                                val initial = (agent.name.takeIf { it.isNotBlank() } ?: agent.id)
+                                    .firstOrNull()
+                                    ?.uppercaseChar()
+                                    ?.toString()
+                                    ?: "?"
+                                Text(
+                                    text = initial,
+                                    fontSize = 64.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = agentColor,
+                                )
+                            }
+                        }
                     }
                 }
             }

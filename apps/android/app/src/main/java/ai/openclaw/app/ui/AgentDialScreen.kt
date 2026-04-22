@@ -139,15 +139,24 @@ fun AgentDialScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                 modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(52.dp)),
               )
             } else {
-              // Fallback: solid theme-colored square until the structured-
-              // avatar manifest bytes arrive, or for agents without a
-              // structured avatar. Intentionally blank — no emoji, no
-              // initials.
+              // No atlas manifest — fall back to image → emoji → letter
+              // initial. The agent's name is rendered by the surrounding
+              // dial layout below, so [AgentAvatarFallback] only draws the
+              // avatar slot itself.
               Box(
                 modifier = Modifier
                   .fillMaxSize()
-                  .background(themeColor.copy(alpha = 0.25f)),
-              )
+                  .background(themeColor.copy(alpha = 0.08f)),
+              ) {
+                AgentAvatarFallback(
+                  agentName = agent.name,
+                  agentId = agent.id,
+                  emoji = agent.emoji,
+                  avatarUrl = agent.avatarUrl,
+                  themeColor = themeColor,
+                  modifier = Modifier.fillMaxSize(),
+                )
+              }
             }
           }
         }

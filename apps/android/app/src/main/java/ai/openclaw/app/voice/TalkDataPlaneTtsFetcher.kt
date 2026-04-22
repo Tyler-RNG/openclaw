@@ -49,7 +49,21 @@ internal class TalkDataPlaneTtsFetcher(
             conn.setRequestProperty("Authorization", "Bearer $token")
             val code = conn.responseCode
             if (code != 200) {
-                WearRelayLog.warn(logLabel, "data-plane tts HTTP $code")
+                // Read the upstream error body (plugin surfaces
+                // `{error: {message, detail}}` on non-200) so the
+                // diagnostic panel shows *why* the request failed rather
+                // than just the status code. Helps triage whether the
+                // plugin is reaching ElevenLabs, whether the API key is
+                // valid, quota, malformed request, etc.
+                val errBody = try {
+                    (conn.errorStream ?: conn.inputStream)?.use {
+                        it.readBytes().toString(Charsets.UTF_8).take(200)
+                    }
+                } catch (_: Throwable) {
+                    null
+                }
+                val detail = errBody?.takeIf { it.isNotBlank() }?.let { " body=$it" } ?: ""
+                WearRelayLog.warn(logLabel, "data-plane tts HTTP $code$detail")
                 conn.disconnect()
                 return@withContext null
             }

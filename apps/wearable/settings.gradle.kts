@@ -18,3 +18,5 @@ rootProject.name = "OpenClawWear"
 include(":app")
 include(":displaykit")
 project(":displaykit").projectDir = file("../shared/OpenClawDisplayKit")
+include(":displaykit-android")
+project(":displaykit-android").projectDir = file("../shared/OpenClawDisplayKitAndroid")

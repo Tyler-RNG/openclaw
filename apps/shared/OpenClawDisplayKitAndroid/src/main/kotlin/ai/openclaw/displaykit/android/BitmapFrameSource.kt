@@ -1,4 +1,4 @@
-package ai.openclaw.app.avatar
+package ai.openclaw.displaykit.android
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -21,9 +21,8 @@ import kotlinx.serialization.json.Json
  *   `x/y/w/h` crop rect; the returned bitmap is a `createBitmap(src, x, y, w, h)`
  *   slice of the decoded atlas, cached per `(ref, rect)` pair.
  *
- * Mirror of the watch-side type in apps/wearable/.../AvatarPlayback.kt — a
- * shared Android UI module would deduplicate this, pending a refactor. Any
- * functional change here should also land there until the merge happens.
+ * Lives in the `OpenClawDisplayKitAndroid` shared module so both the phone
+ * app and the Wear OS watch app consume the same Bitmap-backed frame source.
  */
 class BitmapFrameSource(
     private val bytesByRef: Map<String, ByteArray>,
@@ -74,6 +73,12 @@ class BitmapFrameSource(
     }
 }
 
+/**
+ * Envelope parser for the DataItem body at `/openclaw/avatars/<id>/character-manifest`.
+ * The phone publishes {manifest, revision} as JSON text; the watch parses it
+ * back through kotlinx-serialization and feeds DisplayKit. Returns null on
+ * parse failure so callers can fall back to the legacy per-kind path.
+ */
 object CharacterManifestJson {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -89,7 +94,15 @@ object CharacterManifestJson {
         manifest.modes.firstOrNull { manifest.content.containsKey(it) }
 }
 
-/** True once every asset ref in [envelope] has bytes in [assetBytes]. */
+/**
+ * Returns true when every asset ref declared by [envelope].manifest.assets.refs
+ * has bytes in [assetBytes]. The CharacterAvatar composable uses this to
+ * decide whether to render (all bytes present, player will find frames) or
+ * fall back to the legacy path until the phone finishes publishing.
+ *
+ * Empty `refs` returns true — manifest legitimately has no assets (e.g. a
+ * states-only agent pointing at HTTP-served GIFs the phone hasn't rewritten).
+ */
 fun characterManifestBytesReady(
     envelope: CharacterManifestEnvelope,
     assetBytes: Map<String, ByteArray>,

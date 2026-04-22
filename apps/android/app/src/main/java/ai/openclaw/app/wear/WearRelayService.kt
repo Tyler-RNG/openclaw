@@ -6,6 +6,7 @@ import com.google.android.gms.wearable.Wearable
 import com.google.android.gms.wearable.WearableListenerService
 import ai.openclaw.app.NodeApp
 import ai.openclaw.app.NodeRuntime
+import ai.openclaw.app.avatar.AvatarMarkerParser
 import ai.openclaw.app.protocol.WearAsset
 import com.google.android.gms.wearable.Asset
 import com.google.android.gms.wearable.PutDataMapRequest
@@ -263,13 +264,13 @@ class WearRelayService : WearableListenerService() {
   }
 
   /**
-   * Read `identity.avatarStates` (sidecar-synthesized) and stash the descriptor
-   * so subsequent chat turns can fire GIF swaps and inject the instruction.
-   * Safe no-op if the agent isn't states-configured.
+   * Read `identity.avatarStates` (emitted by the gateway from plugin config)
+   * and stash the descriptor so subsequent chat turns can fire GIF swaps and
+   * inject the instruction. Safe no-op if the agent isn't states-configured.
    *
    * Logs enough to tell WHY capture failed (missing field, missing default,
-   * invalid entries) so interim-setup issues on the sidecar side are
-   * diagnosable from the relay panel alone.
+   * invalid entries) so setup issues are diagnosable from the relay panel
+   * alone.
    */
   /**
    * Publish arbitrary bytes at an arbitrary DataClient path as a DataMap
@@ -513,6 +514,35 @@ class WearRelayService : WearableListenerService() {
             put("audioMime", part.audioMime ?: "audio/mpeg")
           }
         }
+        // Newer watches (Phase 5) read `audioSegments` and play per-emotion
+        // audio in sequence. Older builds ignore the field and use the
+        // top-level audio* fields above (which carry the first segment).
+        val segments = part.audioSegments
+        if (!segments.isNullOrEmpty() && segments.size > 1) {
+          val arr = org.json.JSONArray()
+          for (seg in segments) {
+            val segObj = JSONObject().apply {
+              put("text", seg.text)
+              if (seg.emotion != null) put("emotion", seg.emotion)
+              when {
+                seg.audioAssetRef != null -> {
+                  put("audioAssetRef", seg.audioAssetRef)
+                  put("audioMime", seg.audioMime ?: "audio/mpeg")
+                }
+                seg.audioUrl != null -> {
+                  put("audioUrl", seg.audioUrl)
+                  put("audioMime", seg.audioMime ?: "audio/mpeg")
+                }
+                seg.audioBase64 != null -> {
+                  put("audioBase64", seg.audioBase64)
+                  put("audioMime", seg.audioMime ?: "audio/mpeg")
+                }
+              }
+            }
+            arr.put(segObj)
+          }
+          put("audioSegments", arr)
+        }
       }
       reply(app, nodeId, PATH_CHAT_REPLY, msg.toString())
       val kind = if (part.isFinal) "final" else "interim"
@@ -582,17 +612,36 @@ class WearRelayService : WearableListenerService() {
     val size = data.toByteArray(Charsets.UTF_8).size
     if (size <= DATA_LAYER_MSG_CAP_BYTES) return data
 
-    // Chat reply: strip audio (watch falls back to local TTS).
+    // Chat reply: strip audio (watch falls back to local TTS). Handles
+    // both the single-blob legacy fields and the per-emotion
+    // `audioSegments` array introduced in Phase 4.
     if (path == PATH_CHAT_REPLY) {
       return try {
         val obj = JSONObject(data)
-        if (!obj.has("audioBase64")) {
+        val segments = obj.optJSONArray("audioSegments")
+        val hadSegmentAudio = segments?.let {
+          var any = false
+          for (i in 0 until it.length()) {
+            val seg = it.optJSONObject(i) ?: continue
+            if (seg.has("audioBase64")) {
+              seg.remove("audioBase64")
+              seg.remove("audioMime")
+              seg.put("audioStripped", true)
+              any = true
+            }
+          }
+          any
+        } ?: false
+        val hadTopAudio = obj.has("audioBase64")
+        if (hadTopAudio) {
+          obj.remove("audioBase64")
+          obj.remove("audioMime")
+          obj.put("audioStripped", true)
+        }
+        if (!hadSegmentAudio && !hadTopAudio) {
           WearRelayLog.warn("chat", "reply ${size / 1000}KB > cap, no audio to strip")
           return data
         }
-        obj.remove("audioBase64")
-        obj.remove("audioMime")
-        obj.put("audioStripped", true)
         WearRelayLog.warn("chat", "audio ${size / 1000}KB > cap — text-only, local TTS")
         obj.toString()
       } catch (_: Throwable) { data }

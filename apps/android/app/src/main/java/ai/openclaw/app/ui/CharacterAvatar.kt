@@ -12,11 +12,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
-import ai.openclaw.app.avatar.BitmapFrameSource
-import ai.openclaw.app.avatar.CharacterManifestJson
 import ai.openclaw.displaykit.AnimationGraph
 import ai.openclaw.displaykit.CharacterManifestEnvelope
 import ai.openclaw.displaykit.SpriteAnimationPlayer
+import ai.openclaw.displaykit.android.BitmapFrameSource
+import ai.openclaw.displaykit.android.CharacterManifestJson
 
 /**
  * Avatar composable driven by the gateway's CharacterManifest contract and

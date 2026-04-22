@@ -22,7 +22,13 @@ internal sealed interface TalkSpeakResult {
   data class Failure(val message: String) : TalkSpeakResult
 }
 
-internal class TalkSpeakClient(
+/**
+ * Internal helper: wraps the `talk.speak` gateway RPC and decodes the base64
+ * audio payload. Used by [TalkSpeaker] as the RPC fallback when the direct
+ * data-plane `/stream/tts` path isn't available. Callers outside this package
+ * should go through [TalkSpeaker] rather than using this client directly.
+ */
+internal class TalkSpeakRpcClient(
   private val session: GatewaySession? = null,
   private val json: Json = Json { ignoreUnknownKeys = true },
   private val requestDetailed: (suspend (String, String, Long) -> GatewaySession.RpcResult)? = null,

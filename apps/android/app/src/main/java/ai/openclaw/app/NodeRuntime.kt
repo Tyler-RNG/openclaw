@@ -22,10 +22,16 @@ import ai.openclaw.app.gateway.probeGatewayTlsFingerprint
 import ai.openclaw.app.node.*
 import ai.openclaw.app.protocol.OpenClawCanvasA2UIAction
 import ai.openclaw.app.voice.MicCaptureManager
+import ai.openclaw.app.avatar.parseAvatarMarkers
+import ai.openclaw.app.voice.TalkDataPlaneTtsFetcher
 import ai.openclaw.app.voice.TalkModeManager
+import ai.openclaw.app.voice.TalkSpeakRpcClient
+import ai.openclaw.app.voice.TalkSpeaker
+import ai.openclaw.app.voice.TalkSpeakerDataPlane
+import ai.openclaw.app.voice.TtsAssetUploader
 import ai.openclaw.app.voice.VoiceConversationEntry
+import ai.openclaw.app.voice.WearTtsDelivery
 import ai.openclaw.app.wear.WearRelayLog
-import ai.openclaw.app.wear.parseAvatarMarkers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -368,6 +374,45 @@ class NodeRuntime(
       },
     )
 
+  /**
+   * Uploads wear-relay TTS audio through the Wearable DataClient when the
+   * clip is too large to inline in the message. Wired to the app's
+   * `appContext` so tests can substitute a fake implementation via the
+   * [talkSpeaker] constructor.
+   */
+  private val ttsAssetUploader = object : TtsAssetUploader {
+    override suspend fun putAsset(assetId: String, bytes: ByteArray, mime: String): Boolean {
+      return try {
+        val asset = com.google.android.gms.wearable.Asset.createFromBytes(bytes)
+        val request = com.google.android.gms.wearable.PutDataMapRequest
+          .create("/openclaw/tts/$assetId").apply {
+            dataMap.putAsset("data", asset)
+            dataMap.putString("mime", mime)
+            dataMap.putLong("ts", System.currentTimeMillis())
+          }.asPutDataRequest().setUrgent()
+        com.google.android.gms.wearable.Wearable.getDataClient(appContext).putDataItem(request).await()
+        Log.d(TAG_WEAR, "tts asset $assetId queued (${bytes.size / 1000}KB)")
+        true
+      } catch (e: Throwable) {
+        WearRelayLog.warn("chat", "tts asset put failed: ${e.javaClass.simpleName}")
+        false
+      }
+    }
+  }
+
+  private val talkSpeaker = TalkSpeaker(
+    rpcClient = TalkSpeakRpcClient(session = operatorSession, json = json),
+    dataPlaneFetcher = TalkDataPlaneTtsFetcher(assetUploader = ttsAssetUploader),
+    session = operatorSession,
+    dataPlaneLookup = {
+      _wearDataPlane.value?.let {
+        TalkSpeakerDataPlane(baseUrl = it.baseUrl, streamTtsEnabled = it.streamTts)
+      }
+    },
+    authTokenLookup = { activeGatewayAuth?.token?.takeIf { it.isNotEmpty() } },
+    json = json,
+  )
+
   init {
     DeviceNotificationListenerService.setNodeEventSink { event, payloadJson ->
       scope.launch {
@@ -394,6 +439,8 @@ class NodeRuntime(
       session = operatorSession,
       supportsChatSubscribe = false,
       isConnected = { operatorConnected },
+      talkSpeaker = talkSpeaker,
+      currentAgentId = { resolveActiveAgentId().takeIf { it.isNotEmpty() } },
       onBeforeSpeak = { micCapture.pauseForTts() },
       onAfterSpeak = { micCapture.resumeAfterTts() },
     ).also { speaker ->
@@ -466,6 +513,8 @@ class NodeRuntime(
       session = operatorSession,
       supportsChatSubscribe = true,
       isConnected = { operatorConnected },
+      talkSpeaker = talkSpeaker,
+      currentAgentId = { resolveActiveAgentId().takeIf { it.isNotEmpty() } },
       onBeforeSpeak = { micCapture.pauseForTts() },
       onAfterSpeak = { micCapture.resumeAfterTts() },
     )
@@ -1232,6 +1281,32 @@ class NodeRuntime(
      * parser would find nothing and the markers would get dropped.
      */
     val avatarMarkers: List<String> = emptyList(),
+    /**
+     * Per-emotion audio segments. When set, the watch should play each
+     * segment's audio in order, dispatching the matching avatar state
+     * change ahead of each segment for lip-sync. The single-blob
+     * `audioUrl`/`audioBase64`/`audioAssetRef`/`audioMime` fields still
+     * carry the FIRST segment's audio for older watch builds that don't
+     * yet know about `audioSegments`; newer watches should prefer the
+     * segment list when present.
+     */
+    val audioSegments: List<WearChatAudioSegment>? = null,
+  )
+
+  /**
+   * One emotion-tagged audio segment produced by TalkSpeaker for the wear
+   * relay. `emotion` is the state name of the `<<<state>>>` marker that
+   * preceded this segment's text, or null for the leading segment before
+   * any marker. Exactly one of `audioUrl`/`audioBase64`/`audioAssetRef`
+   * carries the payload; the others are null.
+   */
+  data class WearChatAudioSegment(
+    val text: String,
+    val emotion: String?,
+    val audioUrl: String? = null,
+    val audioBase64: String? = null,
+    val audioAssetRef: String? = null,
+    val audioMime: String? = null,
   )
 
   /**
@@ -1417,21 +1492,23 @@ class NodeRuntime(
               val finalText = parsed.cleanedText.trim().ifEmpty { finalTextRaw }
               val markers = parsed.markers.map { it.state }
               WearRelayLog.info("chat", "final: \"${finalText.take(80)}\"")
-              // TODO(tts-streaming): `wearRelayTalkSpeak` buffers the full
-              // audio blob from /stream/tts then ships it, so first-sound
-              // latency on the watch is ~2s. Full design (phase 0 / 1 / 2
-              // rollout, wire format, tempfile-fed MediaPlayer on the watch)
-              // is pinned at `docs/tts/streaming.md`. Expected win after
-              // phase 2 lands: ~2s → ~400ms time-to-first-audio.
-              val audio = wearRelayTalkSpeak(finalText, agentId)
+              // TODO(tts-streaming): `TalkSpeaker.synthesizeForWearRelay`
+              // buffers the full audio blob from /stream/tts then ships it,
+              // so first-sound latency on the watch is ~2s. Full design
+              // (phase 0 / 1 / 2 rollout, wire format, tempfile-fed
+              // MediaPlayer on the watch) is pinned at `docs/tts/streaming.md`.
+              // Expected win after phase 2 lands: ~2s → ~400ms time-to-first-audio.
+              val segments = buildWearAudioSegments(finalText, agentId)
+              val primary = segments.firstOrNull()
               onPart(WearChatPart(
                 text = finalText,
                 isFinal = true,
-                audioUrl = audio?.audioUrl,
-                audioBase64 = audio?.audioBase64,
-                audioAssetRef = audio?.audioAssetRef,
-                audioMime = audio?.mimeType,
+                audioUrl = primary?.audioUrl,
+                audioBase64 = primary?.audioBase64,
+                audioAssetRef = primary?.audioAssetRef,
+                audioMime = primary?.audioMime,
                 avatarMarkers = markers,
+                audioSegments = segments.takeIf { it.isNotEmpty() },
               ))
             } else {
               onPart(WearChatPart("", isFinal = true))
@@ -1448,15 +1525,17 @@ class NodeRuntime(
           // poll-timeout finalization doesn't regress to speaking markers.
           val parsed = parseAvatarMarkers(fallback)
           val cleaned = parsed.cleanedText.trim().ifEmpty { fallback }
-          val audio = wearRelayTalkSpeak(cleaned, agentId)
+          val segments = buildWearAudioSegments(cleaned, agentId)
+          val primary = segments.firstOrNull()
           onPart(WearChatPart(
             text = cleaned,
             isFinal = true,
-            audioUrl = audio?.audioUrl,
-            audioBase64 = audio?.audioBase64,
-            audioAssetRef = audio?.audioAssetRef,
-            audioMime = audio?.mimeType,
+            audioUrl = primary?.audioUrl,
+            audioBase64 = primary?.audioBase64,
+            audioAssetRef = primary?.audioAssetRef,
+            audioMime = primary?.audioMime,
             avatarMarkers = parsed.markers.map { it.state },
+            audioSegments = segments.takeIf { it.isNotEmpty() },
           ))
           null
         } else {
@@ -1466,6 +1545,43 @@ class NodeRuntime(
       } catch (e: Throwable) {
         "${e.javaClass.simpleName}: ${e.message}"
       }
+    }
+  }
+
+  /**
+   * Splits [text] by `<<<state>>>` markers and synthesizes TTS audio for
+   * each segment with the preceding marker's state as the emotion hint
+   * (null for the leading segment). Returns a list ready to pack into
+   * [WearChatPart.audioSegments]. Empty list when [text] has no printable
+   * content after trimming.
+   *
+   * This is the wear-relay analog of TalkModeManager's per-segment
+   * [splitByMarkers] loop: both use the same marker parser so text
+   * cleaning + emotion tagging stay consistent between phone voice mode
+   * and watch playback.
+   */
+  private suspend fun buildWearAudioSegments(
+    text: String,
+    agentId: String,
+  ): List<WearChatAudioSegment> {
+    val textSegments = ai.openclaw.app.avatar.splitByMarkers(text)
+      .map { it.copy(text = it.text.trim()) }
+      .filter { it.text.isNotEmpty() }
+    if (textSegments.isEmpty()) return emptyList()
+    return textSegments.map { segment ->
+      val delivery = talkSpeaker.synthesizeForWearRelay(
+        text = segment.text,
+        agentId = agentId,
+        emotion = segment.emotion,
+      )
+      WearChatAudioSegment(
+        text = segment.text,
+        emotion = segment.emotion,
+        audioUrl = (delivery as? WearTtsDelivery.StreamingUrl)?.audioUrl,
+        audioBase64 = (delivery as? WearTtsDelivery.Inline)?.audioBase64,
+        audioAssetRef = (delivery as? WearTtsDelivery.AssetRef)?.audioAssetRef,
+        audioMime = delivery?.mimeType,
+      )
     }
   }
 
@@ -1515,162 +1631,7 @@ class NodeRuntime(
     return sig
   }
 
-  data class TalkSpeakResult(
-    val audioUrl: String? = null,
-    val audioBase64: String? = null,
-    val audioAssetRef: String? = null,
-    val mimeType: String = "audio/mpeg",
-  )
-
-  /**
-   * Produces TTS audio for the watch. Strategy:
-   *  1. If the agent has ElevenLabs voice config + dataPlane.streamTts, fetch
-   *     the sidecar's /stream/tts endpoint directly from the phone (which IS
-   *     on the tailnet; the watch isn't). Faster and uses the right voice.
-   *  2. Otherwise fall back to the `talk.speak` RPC on the gateway.
-   *
-   * Every path is logged so we can see which one actually produced audio.
-   */
-  private suspend fun wearRelayTalkSpeak(text: String, agentId: String): TalkSpeakResult? {
-    val agent = gatewayAgents.firstOrNull { it.id == agentId }
-    val dp = _wearDataPlane.value
-    val token = activeGatewayAuth?.token
-
-    val wantsElevenLabs = agent?.voiceProvider.equals("elevenlabs", ignoreCase = true)
-    val canFetchDirect = wantsElevenLabs &&
-      !agent?.voiceId.isNullOrBlank() &&
-      dp?.streamTts == true &&
-      !token.isNullOrEmpty()
-
-    if (canFetchDirect) {
-      WearRelayLog.info("chat", "sidecar tts: $agentId voice=${agent!!.voiceId!!.take(8)}")
-      val direct = fetchSidecarTts(dp!!.baseUrl, agent.voiceId!!, text, token!!)
-      if (direct != null) return direct
-      WearRelayLog.warn("chat", "sidecar tts failed, falling back to talk.speak")
-    } else {
-      val reason = buildString {
-        if (wantsElevenLabs != true) append("provider=${agent?.voiceProvider ?: "null"} ")
-        if (agent?.voiceId.isNullOrBlank()) append("voiceId=null ")
-        if (dp?.streamTts != true) append("streamTts=${dp?.streamTts} ")
-        if (token.isNullOrEmpty()) append("noToken ")
-      }.trim()
-      WearRelayLog.info("chat", "sidecar tts skipped: $reason")
-    }
-
-    return talkSpeakRpc(text, agentId, agent)
-  }
-
-  private suspend fun talkSpeakRpc(text: String, agentId: String, agent: GatewayAgentSummary?): TalkSpeakResult? {
-    return try {
-      // Keep params minimal — gateway's Zod schema rejects extra fields.
-      // If the gateway needs to pick a voice per-agent, it should do so via
-      // the session context or extend the schema explicitly. The sidecar-
-      // direct path handles ElevenLabs; this is just the default-voice
-      // fallback for agents without voice config.
-      val params = kotlinx.serialization.json.buildJsonObject {
-        put("text", kotlinx.serialization.json.JsonPrimitive(text))
-      }
-      val result = operatorSession.requestDetailed("talk.speak", params.toString(), timeoutMs = 30_000)
-      if (!result.ok || result.payloadJson == null) {
-        WearRelayLog.warn("chat", "talk.speak: ${result.error?.message?.take(40) ?: "no payload"}")
-        return null
-      }
-      val payload = json.parseToJsonElement(result.payloadJson!!).asObjectOrNull() ?: return null
-      val audioUrl = (payload["audioUrl"].asStringOrNull() ?: payload["streamUrl"].asStringOrNull())
-        ?.takeIf { it.isNotBlank() }
-      val audioBase64 = payload["audioBase64"].asStringOrNull()?.takeIf { it.isNotBlank() }
-      val mimeType = payload["mimeType"].asStringOrNull() ?: "audio/mpeg"
-      when {
-        audioUrl != null -> WearRelayLog.info("chat", "talk.speak → url")
-        audioBase64 != null -> WearRelayLog.info("chat", "talk.speak → base64 ${audioBase64.length / 1000}KB")
-        else -> WearRelayLog.warn("chat", "talk.speak → no audio in response")
-      }
-      if (audioUrl == null && audioBase64 == null) null
-      else TalkSpeakResult(audioUrl = audioUrl, audioBase64 = audioBase64, mimeType = mimeType)
-    } catch (e: Throwable) {
-      WearRelayLog.warn("chat", "talk.speak: ${e.javaClass.simpleName}")
-      null
-    }
-  }
-
-  private suspend fun fetchSidecarTts(
-    baseUrl: String,
-    voiceId: String,
-    text: String,
-    token: String,
-  ): TalkSpeakResult? {
-    return kotlinx.coroutines.withContext(Dispatchers.IO) {
-      try {
-        val voiceEnc = java.net.URLEncoder.encode(voiceId, Charsets.UTF_8.name())
-        val textEnc = java.net.URLEncoder.encode(text, Charsets.UTF_8.name())
-        val tokenEnc = java.net.URLEncoder.encode(token, Charsets.UTF_8.name())
-        val urlStr = "${baseUrl.trimEnd('/')}/stream/tts?voice=$voiceEnc&text=$textEnc&token=$tokenEnc"
-        val conn = java.net.URL(urlStr).openConnection() as java.net.HttpURLConnection
-        conn.connectTimeout = 5_000
-        conn.readTimeout = 30_000
-        conn.requestMethod = "GET"
-        val code = conn.responseCode
-        if (code != 200) {
-          WearRelayLog.warn("chat", "sidecar tts HTTP $code")
-          conn.disconnect()
-          return@withContext null
-        }
-        val mime = conn.contentType?.substringBefore(';')?.trim() ?: "audio/mpeg"
-        val bytes = conn.inputStream.use { it.readBytes() }
-        conn.disconnect()
-        if (bytes.isEmpty()) {
-          WearRelayLog.warn("chat", "sidecar tts empty body")
-          return@withContext null
-        }
-        WearRelayLog.info("chat", "sidecar tts ${bytes.size / 1000}KB $mime")
-
-        // Small audio inlines via MessageClient (fast, no sync wait).
-        // Big audio rides DataClient Asset (no 100 KB cap).
-        if (bytes.size < TTS_INLINE_CAP_BYTES) {
-          val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-          TalkSpeakResult(audioBase64 = b64, mimeType = mime)
-        } else {
-          val assetId = "tts-${java.util.UUID.randomUUID().toString().take(12)}"
-          if (putTtsAsset(assetId, bytes, mime)) {
-            TalkSpeakResult(audioAssetRef = "wear-asset:tts:$assetId", mimeType = mime)
-          } else {
-            null
-          }
-        }
-      } catch (e: java.net.UnknownHostException) {
-        WearRelayLog.warn("chat", "sidecar tts DNS fail")
-        null
-      } catch (e: java.net.SocketTimeoutException) {
-        WearRelayLog.warn("chat", "sidecar tts timeout")
-        null
-      } catch (e: Throwable) {
-        WearRelayLog.warn("chat", "sidecar tts: ${e.javaClass.simpleName}")
-        null
-      }
-    }
-  }
-
-  private suspend fun putTtsAsset(assetId: String, bytes: ByteArray, mime: String): Boolean {
-    return try {
-      val asset = com.google.android.gms.wearable.Asset.createFromBytes(bytes)
-      val request = com.google.android.gms.wearable.PutDataMapRequest
-        .create("/openclaw/tts/$assetId").apply {
-          dataMap.putAsset("data", asset)
-          dataMap.putString("mime", mime)
-          dataMap.putLong("ts", System.currentTimeMillis())
-        }.asPutDataRequest().setUrgent()
-      com.google.android.gms.wearable.Wearable.getDataClient(appContext).putDataItem(request).await()
-      Log.d(TAG_WEAR, "tts asset $assetId queued (${bytes.size / 1000}KB)")
-      true
-    } catch (e: Throwable) {
-      WearRelayLog.warn("chat", "tts asset put failed: ${e.javaClass.simpleName}")
-      false
-    }
-  }
-
   companion object {
-    /** Audio under this size rides inline via the reply MessageClient message. */
-    private const val TTS_INLINE_CAP_BYTES = 60_000
     /** Logcat tag for watch-relay diagnostic output. Visible via `adb logcat`. */
     private const val TAG_WEAR = "WearRelay"
   }
@@ -1703,7 +1664,7 @@ class NodeRuntime(
       val parsed = parseHexColorArgb(raw)
       _seamColorArgb.value = parsed ?: DEFAULT_SEAM_COLOR_ARGB
 
-      // Data plane (sidecar) location — used by the wear relay to rewrite
+      // Data plane base URL — used by the wear relay to rewrite
       // relative avatar paths and to build /stream/tts URLs.
       val dp = config?.get("dataPlane").asObjectOrNull()
       val baseUrl = dp?.get("baseUrl").asStringOrNull()?.trim()
@@ -1753,35 +1714,28 @@ class NodeRuntime(
           val avatarUrl =
             identity?.get("avatarUrl").asStringOrNull()?.trim()
               ?: identity?.get("avatar").asStringOrNull()?.trim()
-          val voice = obj["voice"].asObjectOrNull()
-          val voiceProvider = voice?.get("provider").asStringOrNull()?.trim()
-          val voiceId = voice?.get("voiceId").asStringOrNull()?.trim()
+          // Voice no longer travels on the core agent row — the SpriteCore
+          // plugin owns it end-to-end. TalkSpeaker fetches per-agent voice
+          // directly from the `sprite-core.agents` RPC and caches the
+          // snapshot; see TalkSpeaker.resolveVoice / invalidateAgentsCache.
           GatewayAgentSummary(
             id = id,
             name = name?.takeIf { it.isNotEmpty() },
             emoji = emoji?.takeIf { it.isNotEmpty() },
-            voiceProvider = voiceProvider?.takeIf { it.isNotEmpty() },
-            voiceId = voiceId?.takeIf { it.isNotEmpty() },
             theme = theme?.takeIf { it.isNotEmpty() },
             title = title?.takeIf { it.isNotEmpty() },
             avatarUrl = avatarUrl?.takeIf { it.isNotEmpty() },
           )
         } ?: emptyList()
-
-      run {
-        val withVoice = agents.count { !it.voiceId.isNullOrBlank() }
-        WearRelayLog.info("agents", "${agents.size} parsed, $withVoice with voice")
-        // Per-agent voice details go to logcat only — useful for debugging,
-        // noisy in the on-device panel.
-        agents.forEach { a ->
-          if (!a.voiceId.isNullOrBlank()) {
-            Log.d(TAG_WEAR, "${a.id} voice=${a.voiceProvider}/${a.voiceId!!.take(8)}")
-          }
-        }
-      }
       gatewayDefaultAgentId = defaultAgentId.ifEmpty { null }
       gatewayAgents = agents
       _gatewayAgents.value = agents
+      run {
+        WearRelayLog.info("agents", "${agents.size} parsed (voice lives in sprite-core plugin)")
+      }
+      // Voice + emotion config moved to the SpriteCore plugin; refresh the
+      // TalkSpeaker cache so the next TTS turn picks up the latest snapshot.
+      talkSpeaker.invalidateAgentsCache()
       // Prime the CharacterManifest cache for any agent the phone's own dial
       // will want to render, and drop cache entries for agents that vanished.
       val agentIds = agents.map { it.id }
@@ -2009,8 +1963,6 @@ internal data class GatewayAgentSummary(
   val id: String,
   val name: String?,
   val emoji: String?,
-  val voiceProvider: String? = null,
-  val voiceId: String? = null,
   val theme: String? = null,
   val title: String? = null,
   val avatarUrl: String? = null,

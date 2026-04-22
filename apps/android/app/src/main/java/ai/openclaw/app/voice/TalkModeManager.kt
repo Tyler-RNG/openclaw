@@ -48,6 +48,9 @@ class TalkModeManager(
   private val session: GatewaySession,
   private val supportsChatSubscribe: Boolean,
   private val isConnected: () -> Boolean,
+  private val talkSpeaker: TalkSpeaker,
+  /** Current agent id, for looking up emotion directive overrides. May be null when no agent is selected. */
+  private val currentAgentId: () -> String? = { null },
   private val onBeforeSpeak: suspend () -> Unit = {},
   private val onAfterSpeak: suspend () -> Unit = {},
 ) {
@@ -61,7 +64,6 @@ class TalkModeManager(
 
   private val mainHandler = Handler(Looper.getMainLooper())
   private val json = Json { ignoreUnknownKeys = true }
-  private val talkSpeakClient = TalkSpeakClient(session = session, json = json)
   private val talkAudioPlayer = TalkAudioPlayer(context)
 
   private val _isEnabled = MutableStateFlow(false)
@@ -657,6 +659,16 @@ class TalkModeManager(
     _lastAssistantText.value = cleaned
     ensurePlaybackActive(playbackToken)
 
+    // Split on `<<<state>>>` markers so each segment gets the emotion
+    // directive of the preceding marker (null before the first marker). The
+    // parser strips the markers from each segment's text as a side effect.
+    val segments = ai.openclaw.app.avatar.splitByMarkers(cleaned)
+      .map { it.copy(text = it.text.trim()) }
+      .filter { it.text.isNotEmpty() }
+    if (segments.isEmpty()) return
+
+    val agentId = currentAgentId()
+
     _statusText.value = "Speaking…"
     _isSpeaking.value = true
     lastSpokenText = cleaned
@@ -665,22 +677,31 @@ class TalkModeManager(
 
     try {
       val started = SystemClock.elapsedRealtime()
-      when (val result = talkSpeakClient.synthesize(text = cleaned, directive = directive)) {
-        is TalkSpeakResult.Success -> {
-          ensurePlaybackActive(playbackToken)
-          talkAudioPlayer.play(result.audio)
-          ensurePlaybackActive(playbackToken)
-          Log.d(tag, "talk.speak ok durMs=${SystemClock.elapsedRealtime() - started}")
-        }
-        is TalkSpeakResult.FallbackToLocal -> {
-          Log.d(tag, "talk.speak unavailable; using local TTS: ${result.message}")
-          speakWithSystemTts(cleaned, directive, playbackToken)
-          Log.d(tag, "system tts ok durMs=${SystemClock.elapsedRealtime() - started}")
-        }
-        is TalkSpeakResult.Failure -> {
-          throw IllegalStateException(result.message)
+      for (segment in segments) {
+        when (val result = talkSpeaker.synthesizeForPhone(
+          text = segment.text,
+          baseDirective = directive,
+          agentId = agentId,
+          emotion = segment.emotion,
+        )) {
+          is TalkSpeakResult.Success -> {
+            ensurePlaybackActive(playbackToken)
+            talkAudioPlayer.play(result.audio)
+            ensurePlaybackActive(playbackToken)
+          }
+          is TalkSpeakResult.FallbackToLocal -> {
+            Log.d(tag, "talk.speak unavailable; using local TTS: ${result.message}")
+            speakWithSystemTts(segment.text, directive, playbackToken)
+          }
+          is TalkSpeakResult.Failure -> {
+            throw IllegalStateException(result.message)
+          }
         }
       }
+      Log.d(
+        tag,
+        "talk.speak ok segments=${segments.size} durMs=${SystemClock.elapsedRealtime() - started}",
+      )
     } catch (err: Throwable) {
       if (isPlaybackCancelled(err, playbackToken)) {
         Log.d(tag, "assistant speech cancelled")

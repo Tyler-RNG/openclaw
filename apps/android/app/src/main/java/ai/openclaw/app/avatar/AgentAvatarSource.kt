@@ -2,6 +2,7 @@ package ai.openclaw.app.avatar
 
 import android.util.Log
 import ai.openclaw.displaykit.CharacterManifestEnvelope
+import ai.openclaw.displaykit.android.CharacterManifestJson
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow

@@ -158,7 +158,12 @@ class ConnectionManager(
     return GatewayConnectOptions(
       role = "operator",
       scopes = listOf("operator.read", "operator.write", "operator.talk.secrets"),
-      caps = emptyList(),
+      // Display capabilities tell the gateway what this operator can render.
+      // The SpriteCore plugin keys the `<<<state>>>` prompt-vocabulary
+      // injection on `display:sprite-headshot` — dashboards / headless
+      // sessions don't advertise it and therefore don't see the marker
+      // block. `display:tts` signals the client can play audio replies.
+      caps = listOf("display:sprite-headshot", "display:tts", "display:text"),
       commands = emptyList(),
       permissions = emptyMap(),
       client = buildClientInfo(clientId = "openclaw-android", clientMode = "ui"),

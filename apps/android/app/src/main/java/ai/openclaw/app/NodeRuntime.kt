@@ -22,6 +22,8 @@ import ai.openclaw.app.gateway.probeGatewayTlsFingerprint
 import ai.openclaw.app.node.*
 import ai.openclaw.app.protocol.OpenClawCanvasA2UIAction
 import ai.openclaw.app.voice.MicCaptureManager
+import ai.openclaw.app.voice.SttResult
+import ai.openclaw.app.voice.TalkDataPlaneSttFetcher
 import ai.openclaw.app.avatar.parseAvatarMarkers
 import ai.openclaw.app.diag.PhoneDiagLog
 import ai.openclaw.app.voice.TalkDataPlaneTtsFetcher
@@ -255,6 +257,7 @@ class NodeRuntime(
     val baseUrl: String,
     val publicAssets: Boolean,
     val streamTts: Boolean,
+    val streamStt: Boolean,
   )
 
   private val _wearDataPlane = MutableStateFlow<WearDataPlane?>(null)
@@ -416,6 +419,8 @@ class NodeRuntime(
     json = json,
   )
 
+  private val sttFetcher = TalkDataPlaneSttFetcher(json = json)
+
   init {
     DeviceNotificationListenerService.setNodeEventSink { event, payloadJson ->
       scope.launch {
@@ -453,9 +458,7 @@ class NodeRuntime(
           PhoneDiagLog.info("avatar", "$activeAgentId ← $stateName (segment)")
         }
       },
-    ).also { speaker ->
-      speaker.setPlaybackEnabled(prefs.speakerEnabled.value)
-    }
+    )
   }
   private val voiceReplySpeaker: TalkModeManager
     get() = voiceReplySpeakerLazy.value
@@ -510,6 +513,33 @@ class NodeRuntime(
           }
         }
       },
+      transcribeViaGateway = { file ->
+        val dp = _wearDataPlane.value
+        val token = activeGatewayAuth?.token?.takeIf { it.isNotEmpty() }
+        if (dp == null || !dp.streamStt) {
+          PhoneDiagLog.warn("stt", "transcribe skipped: streamStt disabled on gateway")
+          null
+        } else if (token == null) {
+          PhoneDiagLog.warn("stt", "transcribe skipped: no operator auth token")
+          null
+        } else {
+          when (val r = sttFetcher.transcribe(
+            baseUrl = dp.baseUrl,
+            token = token,
+            audioFile = file,
+            contentType = "audio/wav",
+            model = null,
+            language = null,
+          )) {
+            is SttResult.Success -> r.transcript.text
+            is SttResult.Failure -> {
+              PhoneDiagLog.warn("stt", "transcribe failed: ${r.message}")
+              null
+            }
+          }
+        }
+      },
+      streamSttAvailable = { _wearDataPlane.value?.streamStt == true },
     )
   }
 
@@ -900,16 +930,21 @@ class NodeRuntime(
     externalAudioCaptureActive.value = value
   }
 
-  val speakerEnabled: StateFlow<Boolean>
-    get() = prefs.speakerEnabled
+  /** Press-and-hold: start capture on finger-down. */
+  fun startHoldMic() {
+    prefs.setTalkEnabled(true)
+    stopVoicePlayback()
+    talkMode.ttsOnAllResponses = false
+    scope.launch { talkMode.ensureChatSubscribed() }
+    micCapture.startHold()
+    externalAudioCaptureActive.value = true
+  }
 
-  fun setSpeakerEnabled(value: Boolean) {
-    prefs.setSpeakerEnabled(value)
-    if (voiceReplySpeakerLazy.isInitialized()) {
-      voiceReplySpeaker.setPlaybackEnabled(value)
-    }
-    // Keep TalkMode in sync so any active Talk playback also respects speaker mute.
-    talkMode.setPlaybackEnabled(value)
+  /** Press-and-hold: commit the utterance and stop on finger-up. */
+  fun stopHoldMic() {
+    prefs.setTalkEnabled(false)
+    micCapture.stopHold()
+    externalAudioCaptureActive.value = false
   }
 
   private fun stopActiveVoiceSession() {
@@ -1731,6 +1766,7 @@ class NodeRuntime(
     }
     val assets = pluginConfig["assets"].asObjectOrNull()
     val streamTtsCfg = pluginConfig["streamTts"].asObjectOrNull()
+    val streamSttCfg = pluginConfig["streamStt"].asObjectOrNull()
     val baseUrl = assets?.get("publicBaseUrl").asStringOrNull()?.trim()
     if (baseUrl.isNullOrEmpty()) {
       val msg = "dataPlane(sprite-core): missing assets.publicBaseUrl"
@@ -1744,12 +1780,14 @@ class NodeRuntime(
     }
     val publicAssets = pluginBool(assets, "publicAssets")
     val streamTtsEnabled = pluginBool(streamTtsCfg, "enabled")
+    val streamSttEnabled = pluginBool(streamSttCfg, "enabled")
     val parsed = WearDataPlane(
       baseUrl = baseUrl.trimEnd('/'),
       publicAssets = publicAssets,
       streamTts = streamTtsEnabled,
+      streamStt = streamSttEnabled,
     )
-    val msg = "dataPlane(sprite-core) ${parsed.baseUrl} publicAssets=${parsed.publicAssets} streamTts=${parsed.streamTts}"
+    val msg = "dataPlane(sprite-core) ${parsed.baseUrl} publicAssets=${parsed.publicAssets} streamTts=${parsed.streamTts} streamStt=${parsed.streamStt}"
     WearRelayLog.info("config", msg)
     PhoneDiagLog.info("config", msg)
     return parsed
@@ -1801,8 +1839,9 @@ class NodeRuntime(
           baseUrl = legacyBaseUrl.trimEnd('/'),
           publicAssets = boolField("publicAssets"),
           streamTts = boolField("streamTts"),
+          streamStt = boolField("streamStt"),
         )
-        val msg = "dataPlane(legacy) ${parsed.baseUrl} publicAssets=${parsed.publicAssets} streamTts=${parsed.streamTts}"
+        val msg = "dataPlane(legacy) ${parsed.baseUrl} publicAssets=${parsed.publicAssets} streamTts=${parsed.streamTts} streamStt=${parsed.streamStt}"
         WearRelayLog.info("config", msg)
         PhoneDiagLog.info("config", msg)
         parsed

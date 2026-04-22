@@ -118,7 +118,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
   val gatewayBootstrapToken: StateFlow<String> = prefs.gatewayBootstrapToken
   val onboardingCompleted: StateFlow<Boolean> = prefs.onboardingCompleted
   val canvasDebugStatusEnabled: StateFlow<Boolean> = prefs.canvasDebugStatusEnabled
-  val speakerEnabled: StateFlow<Boolean> = prefs.speakerEnabled
   val micEnabled: StateFlow<Boolean> = prefs.talkEnabled
 
   val micCooldown: StateFlow<Boolean> = runtimeState(initial = false) { it.micCooldown }
@@ -368,8 +367,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     ensureRuntime().setMicEnabled(enabled)
   }
 
-  fun setSpeakerEnabled(enabled: Boolean) {
-    ensureRuntime().setSpeakerEnabled(enabled)
+  fun startHoldMic() {
+    ensureRuntime().startHoldMic()
+  }
+
+  fun stopHoldMic() {
+    ensureRuntime().stopHoldMic()
   }
 
   fun refreshGatewayConnection() {

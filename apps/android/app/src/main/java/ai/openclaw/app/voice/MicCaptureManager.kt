@@ -49,16 +49,51 @@ class MicCaptureManager(
    */
   private val sendToGateway: suspend (message: String, onRunIdKnown: (String) -> Unit) -> String?,
   private val speakAssistantReply: suspend (String) -> Unit = {},
+  /**
+   * Transcribe the given WAV file via the gateway's `/stream/stt` proxy.
+   * Returns the committed transcript, or null when the gateway can't reach
+   * ElevenLabs / no STT plugin is configured — callers fall back to the
+   * Android on-device SpeechRecognizer path. Passed as a callback to keep
+   * MicCaptureManager free of gateway/auth coupling.
+   */
+  private val transcribeViaGateway: (suspend (file: java.io.File) -> String?)? = null,
+  /**
+   * Is the gateway's `/stream/stt` route available right now? Checked at
+   * press-start to decide between the ElevenLabs path (record PCM + upload)
+   * and the SpeechRecognizer fallback. Evaluated lazily so gateway
+   * reconnects / config reloads take effect on the next press.
+   */
+  private val streamSttAvailable: () -> Boolean = { false },
 ) {
   companion object {
     private const val tag = "MicCapture"
     private const val speechMinSessionMs = 30_000L
     private const val speechCompleteSilenceMs = 1_500L
     private const val speechPossibleSilenceMs = 900L
+    // In press-and-hold mode the user — not the recognizer's VAD — owns the
+    // turn boundary. These values keep the session alive through pauses.
+    private const val holdSpeechMinSessionMs = 60_000L
+    private const val holdSpeechCompleteSilenceMs = 600_000L
+    private const val holdSpeechPossibleSilenceMs = 600_000L
     private const val transcriptIdleFlushMs = 1_600L
     private const val maxConversationEntries = 40
     private const val pendingRunTimeoutMs = 45_000L
+    private const val holdReleaseDrainMs = 2_500L
   }
+
+  @Volatile private var holdMode = false
+  private val accumulatedHoldText = mutableListOf<String>()
+  @Volatile private var suppressResultsUntilMs = 0L
+
+  // ElevenLabs-STT press-and-hold path. When [pcmRecorder] is active the
+  // SpeechRecognizer session is NOT started — we record raw PCM instead and
+  // upload on release. Null means the current hold is using the
+  // SpeechRecognizer fallback.
+  private val pcmRecorder = MicPcmRecorder(
+    context = context,
+    onInputLevel = { level -> _inputLevel.value = level },
+  )
+  @Volatile private var pcmHoldActive = false
 
   private val mainHandler = Handler(Looper.getMainLooper())
   private val json = Json { ignoreUnknownKeys = true }
@@ -147,6 +182,13 @@ class MicCaptureManager(
     if (_micEnabled.value == enabled) return
     _micEnabled.value = enabled
     PhoneDiagLog.info("mic", if (enabled) "enabled" else "disabled")
+    // If an external teardown (e.g. leaving the Voice screen) flips the mic
+    // off while we're mid-PCM-hold, make sure the AudioRecord + writer thread
+    // stop — otherwise they leak until the process dies.
+    if (!enabled && pcmHoldActive) {
+      pcmHoldActive = false
+      pcmRecorder.cancel()
+    }
     if (enabled) {
       val pausedForTts =
         synchronized(ttsPauseLock) {
@@ -180,6 +222,108 @@ class MicCaptureManager(
         _micCooldown.value = false
         sendQueuedIfIdle()
       }
+    }
+  }
+
+  /**
+   * Enter press-and-hold mode. When the gateway has `streamStt.enabled=true`
+   * and a [transcribeViaGateway] callback is wired, we record raw 16 kHz PCM
+   * to a temp file for upload on release (ElevenLabs-via-gateway path).
+   * Otherwise we keep the Android SpeechRecognizer alive through silence as a
+   * fallback so the feature still works on gateways without the STT plugin.
+   */
+  fun startHold() {
+    synchronized(accumulatedHoldText) { accumulatedHoldText.clear() }
+    suppressResultsUntilMs = 0L
+
+    val useElevenLabs = transcribeViaGateway != null && streamSttAvailable()
+    if (useElevenLabs) {
+      pcmHoldActive = pcmRecorder.start()
+      if (pcmHoldActive) {
+        PhoneDiagLog.info("mic", "hold start path=elevenlabs-stt")
+        _micEnabled.value = true
+        _isListening.value = true
+        _statusText.value = "Recording…"
+        return
+      }
+      // Recorder failed (permission / device busy) — fall through to the
+      // SpeechRecognizer path so the user still gets some transcription.
+      PhoneDiagLog.warn("mic", "pcm recorder start failed; falling back to SpeechRecognizer")
+    }
+
+    holdMode = true
+    PhoneDiagLog.info("mic", "hold start path=speech-recognizer")
+    setMicEnabled(true)
+  }
+
+  /**
+   * Exit press-and-hold mode. On the ElevenLabs path this stops the
+   * [MicPcmRecorder], uploads the resulting WAV via [transcribeViaGateway],
+   * and queues the returned transcript. On the SpeechRecognizer fallback
+   * path it flushes the accumulated text captured across any mid-hold
+   * recognizer cutoffs.
+   */
+  fun stopHold() {
+    if (pcmHoldActive) {
+      pcmHoldActive = false
+      _isListening.value = false
+      _inputLevel.value = 0f
+      _micEnabled.value = false
+      // Gate the button so users can't re-press while the upload is in flight.
+      _micCooldown.value = true
+      _statusText.value = "Transcribing…"
+      val transcribe = transcribeViaGateway
+      scope.launch {
+        try {
+          val file = pcmRecorder.stop()
+          if (file == null) {
+            PhoneDiagLog.warn("mic", "hold release — no audio captured")
+            _statusText.value = "Mic off"
+            return@launch
+          }
+          PhoneDiagLog.info("mic", "hold release path=elevenlabs-stt bytes=${file.length()}")
+          val text = try {
+            transcribe?.invoke(file)
+          } catch (e: Throwable) {
+            PhoneDiagLog.error("mic", "transcribeViaGateway threw: ${e.javaClass.simpleName}")
+            null
+          }
+          file.delete()
+          if (text.isNullOrBlank()) {
+            _statusText.value = "Transcription failed"
+            PhoneDiagLog.warn("mic", "hold release — empty transcript")
+            return@launch
+          }
+          PhoneDiagLog.info("mic", "hold release — queued transcript chars=${text.length}")
+          queueRecognizedMessage(text.trim())
+          sendQueuedIfIdle()
+        } finally {
+          _micCooldown.value = false
+        }
+      }
+      return
+    }
+
+    if (!holdMode && accumulatedHoldText.isEmpty()) {
+      setMicEnabled(false)
+      return
+    }
+    val combined = synchronized(accumulatedHoldText) {
+      val parts = accumulatedHoldText.toList()
+      accumulatedHoldText.clear()
+      val partial = _liveTranscript.value?.trim().orEmpty()
+      (parts + partial).filter { it.isNotBlank() }.joinToString(" ").trim()
+    }
+    holdMode = false
+    // Discard any onResults that arrive during the recognizer drain window;
+    // the accumulated text has already been captured above.
+    suppressResultsUntilMs = System.currentTimeMillis() + holdReleaseDrainMs
+    _liveTranscript.value = null
+    PhoneDiagLog.info("mic", "hold release path=speech-recognizer chars=${combined.length}")
+    setMicEnabled(false)
+    if (combined.isNotEmpty()) {
+      queueRecognizedMessage(combined)
+      sendQueuedIfIdle()
     }
   }
 
@@ -366,17 +510,20 @@ class MicCaptureManager(
 
   private fun startListeningSession() {
     val recognizerInstance = recognizer ?: return
+    val minMs = if (holdMode) holdSpeechMinSessionMs else speechMinSessionMs
+    val completeSilenceMs = if (holdMode) holdSpeechCompleteSilenceMs else speechCompleteSilenceMs
+    val possibleSilenceMs = if (holdMode) holdSpeechPossibleSilenceMs else speechPossibleSilenceMs
     val intent =
       Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
-        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, speechMinSessionMs)
-        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, speechCompleteSilenceMs)
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, minMs)
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, completeSilenceMs)
         putExtra(
           RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
-          speechPossibleSilenceMs,
+          possibleSilenceMs,
         )
       }
     _statusText.value =
@@ -424,6 +571,9 @@ class MicCaptureManager(
   }
 
   private fun scheduleTranscriptFlush(expectedText: String) {
+    // Hold mode owns the turn boundary — partial-idle auto-commit would
+    // race against the release handler in [stopHold].
+    if (holdMode) return
     transcriptFlushJob?.cancel()
     transcriptFlushJob =
       scope.launch {
@@ -700,9 +850,24 @@ class MicCaptureManager(
       override fun onResults(results: Bundle?) {
         transcriptFlushJob?.cancel()
         transcriptFlushJob = null
+        // Drain-window guard: suppress stray onResults that arrive after the
+        // user released a press-and-hold (the text was already captured by
+        // stopHold; this callback would otherwise double-queue).
+        if (System.currentTimeMillis() < suppressResultsUntilMs) {
+          _liveTranscript.value = null
+          return
+        }
         val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty().firstOrNull()
         if (!text.isNullOrBlank()) {
           val trimmed = text.trim()
+          if (holdMode) {
+            // Recognizer cut the session mid-hold. Accumulate what it heard
+            // and keep listening; stopHold will flush on release.
+            synchronized(accumulatedHoldText) { accumulatedHoldText.add(trimmed) }
+            _liveTranscript.value = null
+            scheduleRestart()
+            return
+          }
           if (trimmed != flushedPartialTranscript) {
             queueRecognizedMessage(trimmed)
             sendQueuedIfIdle()

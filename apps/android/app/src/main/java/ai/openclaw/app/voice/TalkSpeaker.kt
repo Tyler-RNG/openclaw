@@ -96,45 +96,66 @@ internal class TalkSpeaker(
         // emotion directives applied) instead of whatever default voice the
         // core `talk.speak` RPC falls back to on plugin-migrated gateways.
         val agentVoice = if (agentId != null) resolveVoice(agentId) else null
-        val directPath = tryPhoneDataPlaneFetch(
-            text = synthText,
-            baseDirective = effectiveDirective,
-            agentVoice = agentVoice,
-            emotionDirective = emotionDirective,
-        )
-        if (directPath != null) {
-            return directPath
+        return when (
+            val outcome = tryPhoneDataPlaneFetch(
+                text = synthText,
+                baseDirective = effectiveDirective,
+                agentVoice = agentVoice,
+                emotionDirective = emotionDirective,
+            )
+        ) {
+            is PhoneDirectOutcome.Synthesized -> outcome.result
+            // ElevenLabs was configured but the direct fetch failed (network
+            // / HTTP error). Don't call `talk.speak`, which would synthesize
+            // with a wrong default voice on plugin-migrated gateways. Let the
+            // caller speak through Android's system TTS instead, so playback
+            // is audibly a fallback rather than a silent voice swap.
+            is PhoneDirectOutcome.DirectUnreachable -> {
+                PhoneDiagLog.warn("talk", "elevenlabs unreachable → android system tts fallback")
+                TalkSpeakResult.FallbackToLocal("elevenlabs unreachable")
+            }
+            // ElevenLabs wasn't configured (legacy / non-ElevenLabs provider).
+            // Use the `talk.speak` RPC as before — that's the supported path
+            // for non-plugin-migrated gateways.
+            PhoneDirectOutcome.NotConfigured ->
+                rpcClient.synthesize(text = synthText, directive = effectiveDirective)
         }
-
-        return rpcClient.synthesize(text = synthText, directive = effectiveDirective)
     }
 
     /**
      * Attempts the direct data-plane `/stream/tts` fetch for phone voice
-     * playback. Returns a [TalkSpeakResult.Success] wrapping the raw
-     * ElevenLabs audio bytes, or null when the direct path isn't
-     * available (plugin not reachable, streamTts off, agent has no voice,
-     * auth token missing) so the caller falls back to `talk.speak` RPC.
+     * playback. Returns:
+     *  - [PhoneDirectOutcome.Synthesized] when the ElevenLabs fetch returned
+     *    audio bytes.
+     *  - [PhoneDirectOutcome.DirectUnreachable] when ElevenLabs *was* the
+     *    configured provider + voice but the fetch failed (network / HTTP
+     *    error / unreadable body). The caller must NOT fall back to
+     *    `talk.speak` because that RPC uses a different default voice on
+     *    plugin-migrated gateways.
+     *  - [PhoneDirectOutcome.NotConfigured] when no direct-path attempt was
+     *    appropriate (plugin not reachable, streamTts off, non-ElevenLabs
+     *    provider, missing auth token or voiceId). The caller falls back to
+     *    the `talk.speak` RPC for legacy / non-ElevenLabs setups.
      */
     private suspend fun tryPhoneDataPlaneFetch(
         text: String,
         baseDirective: TalkDirective?,
         agentVoice: TalkSpeakerAgentVoice?,
         emotionDirective: SpriteCoreEmotionDirective?,
-    ): TalkSpeakResult? {
+    ): PhoneDirectOutcome {
         val dataPlane = dataPlaneLookup()
         if (dataPlane == null) {
             PhoneDiagLog.warn("talk", "direct path skipped: dataPlane null")
-            return null
+            return PhoneDirectOutcome.NotConfigured
         }
         if (!dataPlane.streamTtsEnabled) {
             PhoneDiagLog.warn("talk", "direct path skipped: streamTts disabled")
-            return null
+            return PhoneDirectOutcome.NotConfigured
         }
         val token = authTokenLookup()?.takeIf { it.isNotEmpty() }
         if (token == null) {
             PhoneDiagLog.warn("talk", "direct path skipped: no auth token")
-            return null
+            return PhoneDirectOutcome.NotConfigured
         }
 
         val wantsElevenLabs = agentVoice?.provider.equals("elevenlabs", ignoreCase = true)
@@ -143,7 +164,7 @@ internal class TalkSpeaker(
                 "talk",
                 "direct path skipped: provider=${agentVoice?.provider ?: "null"}",
             )
-            return null
+            return PhoneDirectOutcome.NotConfigured
         }
 
         val voiceId = emotionDirective?.voiceId?.takeIf { it.isNotBlank() }
@@ -151,7 +172,7 @@ internal class TalkSpeaker(
             ?: agentVoice?.voiceId?.takeIf { it.isNotBlank() }
         if (voiceId.isNullOrBlank()) {
             PhoneDiagLog.warn("talk", "direct path skipped: no voiceId")
-            return null
+            return PhoneDirectOutcome.NotConfigured
         }
 
         PhoneDiagLog.info(
@@ -168,22 +189,24 @@ internal class TalkSpeaker(
             logLabel = "talk",
         )
         if (raw == null) {
-            PhoneDiagLog.warn("talk", "direct /stream/tts failed, falling back to RPC")
-            return null
+            PhoneDiagLog.warn("talk", "direct /stream/tts failed (elevenlabs unreachable)")
+            return PhoneDirectOutcome.DirectUnreachable
         }
 
         PhoneDiagLog.incoming(
             "talk",
             "direct /stream/tts ok ${raw.bytes.size / 1000}KB ${raw.mime}",
         )
-        return TalkSpeakResult.Success(
-            TalkSpeakAudio(
-                bytes = raw.bytes,
-                provider = "elevenlabs",
-                outputFormat = null,
-                voiceCompatible = true,
-                mimeType = raw.mime,
-                fileExtension = mimeToExtension(raw.mime),
+        return PhoneDirectOutcome.Synthesized(
+            TalkSpeakResult.Success(
+                TalkSpeakAudio(
+                    bytes = raw.bytes,
+                    provider = "elevenlabs",
+                    outputFormat = null,
+                    voiceCompatible = true,
+                    mimeType = raw.mime,
+                    fileExtension = mimeToExtension(raw.mime),
+                ),
             ),
         )
     }
@@ -241,16 +264,22 @@ internal class TalkSpeaker(
                 emotionOverride = emotionDirective?.toWireOverride(),
             )
             if (direct != null) return direct
-            WearRelayLog.warn("chat", "data-plane tts failed, falling back to talk.speak")
-        } else {
-            val reason = buildString {
-                if (wantsElevenLabs != true) append("provider=${agentVoice?.provider ?: "null"} ")
-                if (effectiveVoiceId.isNullOrBlank()) append("voiceId=null ")
-                if (dataPlane?.streamTtsEnabled != true) append("streamTts=${dataPlane?.streamTtsEnabled} ")
-                if (token.isNullOrEmpty()) append("noToken ")
-            }.trim()
-            WearRelayLog.info("chat", "data-plane tts skipped: $reason")
+            // ElevenLabs was the intended path but failed. Don't fall through
+            // to `talk.speak`, which on plugin-migrated gateways uses a default
+            // (non-ElevenLabs) voice — returning null lets the watch fall back
+            // to its local Android TextToSpeech cleanly instead of shipping a
+            // wrong voice that sounds like it worked.
+            WearRelayLog.warn("chat", "elevenlabs unreachable → watch local tts fallback")
+            return null
         }
+
+        val reason = buildString {
+            if (wantsElevenLabs != true) append("provider=${agentVoice?.provider ?: "null"} ")
+            if (effectiveVoiceId.isNullOrBlank()) append("voiceId=null ")
+            if (dataPlane?.streamTtsEnabled != true) append("streamTts=${dataPlane?.streamTtsEnabled} ")
+            if (token.isNullOrEmpty()) append("noToken ")
+        }.trim()
+        WearRelayLog.info("chat", "data-plane tts skipped: $reason")
 
         return talkSpeakRpcForRelay(synthText)
     }
@@ -492,6 +521,17 @@ internal class TalkSpeaker(
             else -> null
         }
     }
+}
+
+/**
+ * Outcome of [TalkSpeaker.tryPhoneDataPlaneFetch]. Split into three cases so
+ * the caller can distinguish "ElevenLabs failed — fall back to local system
+ * TTS" from "ElevenLabs wasn't configured — fall through to `talk.speak` RPC".
+ */
+private sealed interface PhoneDirectOutcome {
+    data class Synthesized(val result: TalkSpeakResult) : PhoneDirectOutcome
+    object DirectUnreachable : PhoneDirectOutcome
+    object NotConfigured : PhoneDirectOutcome
 }
 
 /** Snapshot of an agent's voice config relevant for TTS routing. */

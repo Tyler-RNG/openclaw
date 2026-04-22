@@ -79,7 +79,13 @@ internal class WearAudioRouter(
             is WearPlaybackSource.InlineBytes -> playInlineBytes(source, fallbackText)
             is WearPlaybackSource.StreamingUrl -> playStreamingUrl(source, fallbackText)
             is WearPlaybackSource.DataClientAsset -> playDataClientAsset(source)
-            is WearPlaybackSource.LocalTts -> localTts.speak(source.text, source.speed)
+            is WearPlaybackSource.LocalTts -> {
+                // Phone shipped text without audio — either ElevenLabs failed
+                // on the phone side or the reply is intentionally text-only.
+                // Either way this is the explicit offline fallback path.
+                Log.w(TAG, "local android tts (no audio from phone): chars=${source.text.length}")
+                localTts.speak(source.text, source.speed)
+            }
         }
     }
 
@@ -192,6 +198,11 @@ internal class WearAudioRouter(
 
     private suspend fun fallbackToLocal(fallbackText: String?): Boolean {
         val text = fallbackText?.takeIf { it.isNotBlank() } ?: return false
+        // Distinguishes "ElevenLabs pipeline failed" from "text-only reply
+        // with no audio intended." The phone always attempts ElevenLabs
+        // first; reaching this fallback means either a relay failure or the
+        // watch is offline / disconnected from the phone.
+        Log.w(TAG, "elevenlabs pipeline failed → local android tts (offline fallback)")
         return localTts.speak(text)
     }
 

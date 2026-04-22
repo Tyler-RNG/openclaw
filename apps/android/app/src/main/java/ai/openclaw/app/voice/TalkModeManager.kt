@@ -18,6 +18,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import androidx.core.content.ContextCompat
+import ai.openclaw.app.diag.PhoneDiagLog
 import ai.openclaw.app.gateway.GatewaySession
 import java.util.Locale
 import java.util.UUID
@@ -668,6 +669,10 @@ internal class TalkModeManager(
     if (segments.isEmpty()) return
 
     val agentId = currentAgentId()
+    PhoneDiagLog.info(
+      "talk",
+      "play agent=${agentId ?: "?"} segments=${segments.size} chars=${cleaned.length}",
+    )
 
     _statusText.value = "Speaking…"
     _isSpeaking.value = true

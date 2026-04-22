@@ -1,5 +1,6 @@
 package ai.openclaw.app.voice
 
+import ai.openclaw.app.diag.PhoneDiagLog
 import ai.openclaw.app.gateway.GatewaySession
 import ai.openclaw.app.wear.WearRelayLog
 import kotlinx.coroutines.sync.Mutex
@@ -121,18 +122,43 @@ internal class TalkSpeaker(
         agentVoice: TalkSpeakerAgentVoice?,
         emotionDirective: SpriteCoreEmotionDirective?,
     ): TalkSpeakResult? {
-        val dataPlane = dataPlaneLookup() ?: return null
-        if (!dataPlane.streamTtsEnabled) return null
-        val token = authTokenLookup()?.takeIf { it.isNotEmpty() } ?: return null
+        val dataPlane = dataPlaneLookup()
+        if (dataPlane == null) {
+            PhoneDiagLog.warn("talk", "direct path skipped: dataPlane null")
+            return null
+        }
+        if (!dataPlane.streamTtsEnabled) {
+            PhoneDiagLog.warn("talk", "direct path skipped: streamTts disabled")
+            return null
+        }
+        val token = authTokenLookup()?.takeIf { it.isNotEmpty() }
+        if (token == null) {
+            PhoneDiagLog.warn("talk", "direct path skipped: no auth token")
+            return null
+        }
 
         val wantsElevenLabs = agentVoice?.provider.equals("elevenlabs", ignoreCase = true)
-        if (wantsElevenLabs != true) return null
+        if (wantsElevenLabs != true) {
+            PhoneDiagLog.info(
+                "talk",
+                "direct path skipped: provider=${agentVoice?.provider ?: "null"}",
+            )
+            return null
+        }
 
         val voiceId = emotionDirective?.voiceId?.takeIf { it.isNotBlank() }
             ?: baseDirective?.voiceId?.takeIf { it.isNotBlank() }
             ?: agentVoice?.voiceId?.takeIf { it.isNotBlank() }
-            ?: return null
+        if (voiceId.isNullOrBlank()) {
+            PhoneDiagLog.warn("talk", "direct path skipped: no voiceId")
+            return null
+        }
 
+        PhoneDiagLog.info(
+            "talk",
+            "direct /stream/tts voice=${voiceId.take(8)} textChars=${text.length}" +
+                (emotionDirective?.audioTag?.let { " tag=$it" } ?: ""),
+        )
         val raw = dataPlaneFetcher.fetchBytes(
             baseUrl = dataPlane.baseUrl,
             voiceId = voiceId,
@@ -140,8 +166,16 @@ internal class TalkSpeaker(
             token = token,
             emotionOverride = emotionDirective?.toWireOverride(),
             logLabel = "talk",
-        ) ?: return null
+        )
+        if (raw == null) {
+            PhoneDiagLog.warn("talk", "direct /stream/tts failed, falling back to RPC")
+            return null
+        }
 
+        PhoneDiagLog.incoming(
+            "talk",
+            "direct /stream/tts ok ${raw.bytes.size / 1000}KB ${raw.mime}",
+        )
         return TalkSpeakResult.Success(
             TalkSpeakAudio(
                 bytes = raw.bytes,
@@ -308,15 +342,23 @@ internal class TalkSpeaker(
                 // Plugin disabled / method not registered / RPC error —
                 // treat as "no voice for any agent." Falls through to the
                 // talk.speak RPC default-voice path.
-                WearRelayLog.info(
-                    "chat",
-                    "sprite-core.agents unavailable: ${result.error?.message?.take(40) ?: "no payload"}",
-                )
+                val msg = "sprite-core.agents unavailable: ${result.error?.message?.take(40) ?: "no payload"}"
+                WearRelayLog.info("chat", msg)
+                PhoneDiagLog.warn("talk", msg)
                 return null
             }
-            parseAgentsSnapshot(result.payloadJson!!)
+            val snapshot = parseAgentsSnapshot(result.payloadJson!!)
+            if (snapshot != null) {
+                PhoneDiagLog.incoming(
+                    "talk",
+                    "sprite-core.agents ok agents=${snapshot.agents.size}",
+                )
+            }
+            snapshot
         } catch (e: Throwable) {
-            WearRelayLog.info("chat", "sprite-core.agents: ${e.javaClass.simpleName}")
+            val msg = "sprite-core.agents: ${e.javaClass.simpleName}"
+            WearRelayLog.info("chat", msg)
+            PhoneDiagLog.error("talk", msg)
             null
         }
     }

@@ -12,6 +12,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import androidx.core.content.ContextCompat
+import ai.openclaw.app.diag.PhoneDiagLog
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -145,6 +146,7 @@ class MicCaptureManager(
   fun setMicEnabled(enabled: Boolean) {
     if (_micEnabled.value == enabled) return
     _micEnabled.value = enabled
+    PhoneDiagLog.info("mic", if (enabled) "enabled" else "disabled")
     if (enabled) {
       val pausedForTts =
         synchronized(ttsPauseLock) {
@@ -381,6 +383,10 @@ class MicCaptureManager(
     val message = text.trim()
     _liveTranscript.value = null
     if (message.isEmpty()) return
+    PhoneDiagLog.outgoing(
+      "mic",
+      "queueing msg chars=${message.length} \"${message.take(40)}${if (message.length > 40) "…" else ""}\"",
+    )
     appendConversation(
       role = VoiceConversationRole.User,
       text = message,
@@ -637,6 +643,7 @@ class MicCaptureManager(
             else -> "Speech error ($error)"
           }
         _statusText.value = status
+        PhoneDiagLog.warn("mic", "recognizer error=$error ($status)")
 
         if (
           error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ||

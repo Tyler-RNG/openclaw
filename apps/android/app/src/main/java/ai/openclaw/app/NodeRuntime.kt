@@ -23,6 +23,7 @@ import ai.openclaw.app.node.*
 import ai.openclaw.app.protocol.OpenClawCanvasA2UIAction
 import ai.openclaw.app.voice.MicCaptureManager
 import ai.openclaw.app.avatar.parseAvatarMarkers
+import ai.openclaw.app.diag.PhoneDiagLog
 import ai.openclaw.app.voice.TalkDataPlaneTtsFetcher
 import ai.openclaw.app.voice.TalkModeManager
 import ai.openclaw.app.voice.TalkSpeakRpcClient
@@ -312,6 +313,7 @@ class NodeRuntime(
         syncMainSessionKey(resolveAgentIdFromMainSessionKey(mainSessionKey))
         updateStatus()
         micCapture.onGatewayConnectionChanged(true)
+        PhoneDiagLog.info("conn", "operator connected: ${name ?: "?"} @ ${remote ?: "?"}")
         scope.launch {
           refreshHomeCanvasOverviewIfConnected()
           if (voiceReplySpeakerLazy.isInitialized()) {
@@ -329,6 +331,7 @@ class NodeRuntime(
         chat.onDisconnected(message)
         updateStatus()
         micCapture.onGatewayConnectionChanged(false)
+        PhoneDiagLog.warn("conn", "operator disconnected: ${message.take(60)}")
       },
       onEvent = { event, payloadJson ->
         handleGatewayEvent(event, payloadJson)
@@ -1172,6 +1175,7 @@ class NodeRuntime(
    * target the chosen agent. Pass `null` to reset to the gateway default.
    */
   fun setActiveAgent(agentId: String?) {
+    PhoneDiagLog.info("agent", "active → ${agentId ?: "(default)"}")
     syncMainSessionKey(agentId)
   }
 
@@ -1234,8 +1238,15 @@ class NodeRuntime(
    * publish.
    */
   suspend fun wearRelayAssetBytes(relativePath: String): ByteArray? {
-    if (!operatorConnected) return null
-    val dataPlane = _wearDataPlane.value ?: return null
+    if (!operatorConnected) {
+      PhoneDiagLog.warn("asset", "skip $relativePath: operator not connected")
+      return null
+    }
+    val dataPlane = _wearDataPlane.value
+    if (dataPlane == null) {
+      PhoneDiagLog.warn("asset", "skip $relativePath: dataPlane not configured")
+      return null
+    }
     val clean = relativePath.trimStart('/')
     if (clean.isEmpty()) return null
     val encoded = clean.split('/').joinToString("/") { segment ->
@@ -1259,13 +1270,28 @@ class NodeRuntime(
         conn.requestMethod = "GET"
         conn.connect()
         if (conn.responseCode != 200) {
+          PhoneDiagLog.warn(
+            "asset",
+            "HTTP ${conn.responseCode} from ${dataPlane.baseUrl}/openclaw-assets/$clean",
+          )
           conn.disconnect()
           return@withContext null
         }
         val bytes = conn.inputStream.use { it.readBytes() }
         conn.disconnect()
+        PhoneDiagLog.incoming("asset", "ok $relativePath ${bytes.size / 1000}KB")
         bytes
-      } catch (_: Throwable) {
+      } catch (e: java.net.UnknownHostException) {
+        PhoneDiagLog.error("asset", "DNS fail ${dataPlane.baseUrl} — phone not on tailnet?")
+        null
+      } catch (e: java.net.SocketTimeoutException) {
+        PhoneDiagLog.error("asset", "timeout ${dataPlane.baseUrl}")
+        null
+      } catch (e: javax.net.ssl.SSLException) {
+        PhoneDiagLog.error("asset", "TLS fail ${dataPlane.baseUrl}: ${e.message?.take(40)}")
+        null
+      } catch (e: Throwable) {
+        PhoneDiagLog.error("asset", "${e.javaClass.simpleName} $relativePath")
         null
       }
     }
@@ -1668,17 +1694,18 @@ class NodeRuntime(
     val spriteCore = entries?.get("sprite-core").asObjectOrNull()
     val pluginConfig = spriteCore?.get("config").asObjectOrNull()
     if (pluginConfig == null) {
-      WearRelayLog.info("config", "dataPlane not configured (no sprite-core entry)")
+      val msg = "dataPlane not configured (no sprite-core entry)"
+      WearRelayLog.info("config", msg)
+      PhoneDiagLog.warn("config", msg)
       return null
     }
     val assets = pluginConfig["assets"].asObjectOrNull()
     val streamTtsCfg = pluginConfig["streamTts"].asObjectOrNull()
     val baseUrl = assets?.get("publicBaseUrl").asStringOrNull()?.trim()
     if (baseUrl.isNullOrEmpty()) {
-      WearRelayLog.info(
-        "config",
-        "dataPlane(sprite-core): missing assets.publicBaseUrl",
-      )
+      val msg = "dataPlane(sprite-core): missing assets.publicBaseUrl"
+      WearRelayLog.info("config", msg)
+      PhoneDiagLog.warn("config", msg)
       return null
     }
     fun pluginBool(obj: JsonObject?, name: String): Boolean {
@@ -1692,10 +1719,9 @@ class NodeRuntime(
       publicAssets = publicAssets,
       streamTts = streamTtsEnabled,
     )
-    WearRelayLog.info(
-      "config",
-      "dataPlane(sprite-core) ${parsed.baseUrl} publicAssets=${parsed.publicAssets} streamTts=${parsed.streamTts}",
-    )
+    val msg = "dataPlane(sprite-core) ${parsed.baseUrl} publicAssets=${parsed.publicAssets} streamTts=${parsed.streamTts}"
+    WearRelayLog.info("config", msg)
+    PhoneDiagLog.info("config", msg)
     return parsed
   }
 
@@ -1746,10 +1772,9 @@ class NodeRuntime(
           publicAssets = boolField("publicAssets"),
           streamTts = boolField("streamTts"),
         )
-        WearRelayLog.info(
-          "config",
-          "dataPlane(legacy) ${parsed.baseUrl} publicAssets=${parsed.publicAssets} streamTts=${parsed.streamTts}",
-        )
+        val msg = "dataPlane(legacy) ${parsed.baseUrl} publicAssets=${parsed.publicAssets} streamTts=${parsed.streamTts}"
+        WearRelayLog.info("config", msg)
+        PhoneDiagLog.info("config", msg)
         parsed
       } else {
         resolveDataPlaneFromSpriteCore(config)

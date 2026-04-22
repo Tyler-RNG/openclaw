@@ -1,7 +1,6 @@
 package ai.openclaw.wear
 
 import android.content.Context
-import android.net.Uri
 import android.util.Log
 import ai.openclaw.displaykit.CharacterManifestEnvelope
 import ai.openclaw.displaykit.android.CharacterManifestJson
@@ -146,19 +145,17 @@ class WearAssetStore(private val context: Context) {
 
     fun start() {
         dataClient.addListener(listener)
-        // Pull any items that already exist on the Data Layer when we start up.
-        scope.launch {
-            try {
-                val avatarUri = Uri.parse("wear://*${WearAsset.DATA_AVATAR_PATH}/")
-                dataClient.getDataItems(avatarUri, DataClient.FILTER_PREFIX).await()
-                    .forEach { item ->
-                        val p = item.uri.path ?: return@forEach
-                        handleChanged(item, p)
-                    }
-            } catch (e: Throwable) {
-                Log.w(TAG, "initial avatar sweep failed", e)
-            }
-        }
+        // Intentionally NOT sweeping existing DataLayer items here. The GMS
+        // DataLayer persists phone-authored items across watch app uninstalls
+        // and reboots, which means a sweep would rehydrate stale data that
+        // bypasses a fresh gateway fetch. We only react to live TYPE_CHANGED /
+        // TYPE_DELETED events from the phone instead, so the watch is empty
+        // until the phone publishes during this session.
+        //
+        // TODO: revisit pairing this with a phone-side delete-then-put (or
+        // MessageClient-based "resend current state" handshake) so the watch
+        // repopulates reliably even when payload bytes would dedupe identically
+        // in GMS. For now any stale items in DataLayer are simply ignored.
     }
 
     fun stop() {

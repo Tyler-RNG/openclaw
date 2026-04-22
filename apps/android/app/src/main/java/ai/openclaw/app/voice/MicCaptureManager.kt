@@ -136,6 +136,16 @@ class MicCaptureManager(
   private var pendingAssistantEntryId: String? = null
   private var gatewayConnected = false
 
+  // Sliding window of runIds we've sent in the last few turns whose final /
+  // error / aborted event hasn't landed yet. Prevents "chat event dropped: no
+  // pendingRunId" when a reply arrives after pendingRunTimeoutMs cleared
+  // pendingRunId and the queue already moved on to a new runId. Events for
+  // any runId in this set are still processed — late replies display in the
+  // UI instead of getting silently swallowed.
+  private val recentRunIds = LinkedHashSet<String>()
+  private val recentRunIdsLock = Any()
+  private val recentRunIdsWindow = 6
+
   private var recognizer: SpeechRecognizer? = null
   private var restartJob: Job? = null
   private var drainJob: Job? = null
@@ -413,17 +423,14 @@ class MicCaptureManager(
         null
       } ?: return
 
-    val runId = pendingRunId ?: run {
-      Log.d("MicCapture", "no pendingRunId — drop")
-      PhoneDiagLog.warn("mic", "chat event dropped: no pendingRunId (mic not armed?)")
-      return
-    }
     val eventRunId = payload["runId"].asStringOrNull() ?: return
-    if (eventRunId != runId) {
-      Log.d("MicCapture", "runId mismatch: event=$eventRunId pending=$runId")
+    val matchesPending = pendingRunId != null && pendingRunId == eventRunId
+    val matchesRecent = isRecentRunId(eventRunId)
+    if (!matchesPending && !matchesRecent) {
+      Log.d("MicCapture", "runId not tracked: event=$eventRunId pending=$pendingRunId")
       PhoneDiagLog.warn(
         "mic",
-        "chat event dropped: runId event=${eventRunId.take(8)} pending=${runId.take(8)}",
+        "chat event dropped: runId event=${eventRunId.take(8)} not tracked (pending=${pendingRunId?.take(8) ?: "null"})",
       )
       return
     }
@@ -441,6 +448,7 @@ class MicCaptureManager(
         PhoneDiagLog.incoming(
           "mic",
           "chat final chars=${finalText.length}" +
+            (if (!matchesPending) " (late/recent)" else "") +
             if (finalText.isNotEmpty()) " \"${finalText.take(40)}${if (finalText.length > 40) "…" else ""}\"" else "",
         )
         if (finalText.isNotEmpty()) {
@@ -449,24 +457,62 @@ class MicCaptureManager(
         } else if (pendingAssistantEntryId != null) {
           updateConversationEntry(pendingAssistantEntryId!!, text = null, isStreaming = false)
         }
-        completePendingTurn()
+        forgetRunId(eventRunId)
+        if (matchesPending) completePendingTurn() else dropHeadQueuedMessage()
       }
       "error" -> {
         val errorMessage = payload["errorMessage"].asStringOrNull()?.trim().orEmpty().ifEmpty { "Voice request failed" }
-        PhoneDiagLog.error("mic", "chat error: ${errorMessage.take(60)}")
+        PhoneDiagLog.error("mic", "chat error: ${errorMessage.take(60)}" + if (!matchesPending) " (late/recent)" else "")
         upsertPendingAssistant(text = errorMessage, isStreaming = false)
-        completePendingTurn()
+        forgetRunId(eventRunId)
+        if (matchesPending) completePendingTurn() else dropHeadQueuedMessage()
       }
       "aborted" -> {
-        PhoneDiagLog.warn("mic", "chat aborted")
+        PhoneDiagLog.warn("mic", "chat aborted" + if (!matchesPending) " (late/recent)" else "")
         upsertPendingAssistant(text = "Response aborted", isStreaming = false)
-        completePendingTurn()
+        forgetRunId(eventRunId)
+        if (matchesPending) completePendingTurn() else dropHeadQueuedMessage()
       }
       else -> {
         if (!state.isNullOrBlank()) {
           PhoneDiagLog.info("mic", "chat event state=$state")
         }
       }
+    }
+  }
+
+  private fun rememberRunId(runId: String) {
+    synchronized(recentRunIdsLock) {
+      // LinkedHashSet preserves insertion order; remove-then-add bumps an
+      // existing key to the newest slot so it isn't evicted prematurely.
+      recentRunIds.remove(runId)
+      recentRunIds.add(runId)
+      while (recentRunIds.size > recentRunIdsWindow) {
+        val iterator = recentRunIds.iterator()
+        if (iterator.hasNext()) {
+          iterator.next()
+          iterator.remove()
+        }
+      }
+    }
+  }
+
+  private fun isRecentRunId(runId: String): Boolean =
+    synchronized(recentRunIdsLock) { runId in recentRunIds }
+
+  private fun forgetRunId(runId: String) {
+    synchronized(recentRunIdsLock) { recentRunIds.remove(runId) }
+  }
+
+  /**
+   * Remove the head queued message after a late reply is accepted post-
+   * watchdog. The user got their answer; we don't want the next turn to
+   * redeliver the same message. Keeps the conversation forward-moving even
+   * when the gateway response straddled [pendingRunTimeoutMs].
+   */
+  private fun dropHeadQueuedMessage() {
+    if (removeFirstQueuedMessage() != null) {
+      publishQueue()
     }
   }
 
@@ -623,9 +669,11 @@ class MicCaptureManager(
           // Called with the idempotency key before chat.send fires so that
           // pendingRunId is populated before any chat events can arrive.
           pendingRunId = earlyRunId
+          rememberRunId(earlyRunId)
         }
         // Update to the real runId if the gateway returned a different one.
         if (runId != null && runId != pendingRunId) pendingRunId = runId
+        if (runId != null) rememberRunId(runId)
         if (runId == null) {
           PhoneDiagLog.warn("mic", "chat.send returned null runId — send dropped")
           pendingRunTimeoutJob?.cancel()
@@ -662,16 +710,26 @@ class MicCaptureManager(
       scope.launch {
         delay(pendingRunTimeoutMs)
         if (pendingRunId != runId) return@launch
+        // Watchdog fired — clear pending state so new turns aren't blocked,
+        // but DO NOT auto-resend the queued message. The old "resend on
+        // timeout" behavior caused duplicate turns when the original reply
+        // arrived a few seconds late. recentRunIds still holds this id, so
+        // if the gateway eventually emits a final/error/aborted for it, the
+        // reply lands in the UI and clears the queued entry naturally (see
+        // handleGatewayEvent's !matchesPending branch).
+        PhoneDiagLog.warn(
+          "mic",
+          "pending run watchdog: runId=${runId.take(8)} (late reply still accepted, no auto-resend)",
+        )
         pendingRunId = null
         pendingAssistantEntryId = null
         _isSending.value = false
         _statusText.value =
           if (gatewayConnected) {
-            "Voice reply timed out; retrying queued turn"
+            "Reply slow; still waiting"
           } else {
             queuedWaitingStatus()
           }
-        sendQueuedIfIdle()
       }
   }
 

@@ -41,8 +41,10 @@ import ai.openclaw.app.MainViewModel
  * bytes arrive from the gateway.
  *
  * Functionally mirrors the Wear OS AgentDialScreen but targets phone-screen
- * layout: single large avatar, no rotary-scroll plumbing, tap-to-chat in
- * place of the watch's tap-and-hold push-to-talk.
+ * layout: single large avatar, no rotary-scroll plumbing, tap-to-record
+ * (tap the avatar to start a voice message to that agent in place; tap
+ * again to stop). The reply plays back through the phone's voice-reply
+ * speaker regardless of the visible tab.
  */
 @Composable
 fun AgentDialScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
@@ -50,6 +52,9 @@ fun AgentDialScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
   val characterManifests by viewModel.characterManifests.collectAsState()
   val characterAssets by viewModel.characterAssets.collectAsState()
   val agentStates by viewModel.agentStates.collectAsState()
+  val activeAgentId by viewModel.activeAgentId.collectAsState()
+  val micIsListening by viewModel.micIsListening.collectAsState()
+  val micIsSending by viewModel.micIsSending.collectAsState()
 
   if (agents.isEmpty()) {
     EmptyDial(modifier = modifier)
@@ -88,7 +93,7 @@ fun AgentDialScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                   ),
                 shape = CircleShape,
               )
-              .clickable { viewModel.jumpToVoice(agent.id) },
+              .clickable { viewModel.toggleVoiceForAgent(agent.id) },
         ) {
           Box(
             modifier =
@@ -141,10 +146,19 @@ fun AgentDialScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
           )
         }
         Spacer(modifier = Modifier.height(12.dp))
-        val state = agentStates[agent.id]
-        if (!state.isNullOrBlank()) {
+        // Voice-mode status (this agent only). Priority: sending > listening;
+        // otherwise fall back to the avatar animation state, matching the
+        // pre-Phase-4 behavior.
+        val voiceStatus = when {
+          activeAgentId != agent.id -> null
+          micIsSending -> "Sending…"
+          micIsListening -> "Listening…"
+          else -> null
+        }
+        val statusLabel = voiceStatus ?: agentStates[agent.id]?.takeIf { it.isNotBlank() }
+        if (statusLabel != null) {
           Text(
-            text = state,
+            text = statusLabel,
             fontSize = 12.sp,
             color = themeColor,
             textAlign = TextAlign.Center,

@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -298,16 +299,51 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
   }
 
   /**
-   * Set the phone's active agent and navigate to the Voice tab. Called
-   * from the agent-dial tap handler so tapping Ginger on the dial opens
-   * a voice line to Ginger specifically. Pass `agentId = null` to jump to
-   * the voice tab without changing the active agent.
+   * Currently-active agent, parsed from [mainSessionKey]. Returns null
+   * when the session key is the default `"main"` sentinel (no agent
+   * selected). UI observes this to know which agent the mic/chat
+   * surface is currently wired to.
    */
-  fun jumpToVoice(agentId: String? = null) {
-    if (agentId != null) {
-      ensureRuntime().setActiveAgent(agentId)
+  val activeAgentId: StateFlow<String?> =
+    mainSessionKey
+      .map { key ->
+        val trimmed = key.trim()
+        if (trimmed.startsWith("agent:")) {
+          trimmed.removePrefix("agent:").substringBefore(':').trim().takeIf { it.isNotEmpty() }
+        } else {
+          null
+        }
+      }
+      .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+  /**
+   * Tap-to-record on the agent dial: tap the agent's avatar to start
+   * recording a voice message for that agent; tap again to stop early.
+   * Does NOT navigate — the recording runs in place and the reply plays
+   * back via the existing voice-reply speaker.
+   *
+   * Tap semantics:
+   * - Mic off → set active agent to [agentId] + enable mic (start listening)
+   * - Mic on + same agent → disable mic (stop listening; recognizer drains)
+   * - Mic on + different agent → no-op (must stop the current recording
+   *   before switching; avoids mid-capture session-key races).
+   */
+  fun toggleVoiceForAgent(agentId: String) {
+    val runtime = ensureRuntime()
+    val currentActive = activeAgentId.value
+    val currentlyOn = micEnabled.value
+
+    if (currentlyOn) {
+      if (currentActive == agentId) {
+        runtime.setMicEnabled(false)
+      }
+      return
     }
-    _requestedHomeDestination.value = HomeDestination.Voice
+
+    if (currentActive != agentId) {
+      runtime.setActiveAgent(agentId)
+    }
+    runtime.setMicEnabled(true)
   }
 
   fun clearChatDraft() {

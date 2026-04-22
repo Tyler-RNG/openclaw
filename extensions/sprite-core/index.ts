@@ -99,27 +99,37 @@ export default definePluginEntry({
     // the GET /sprite-core/agents HTTP endpoint over the WebSocket so clients
     // (phone, watch) that already speak RPC don't need a second HTTP path +
     // auth-token juggling. Reads fresh plugin config each call.
-    api.registerGatewayMethod("sprite-core.agents", async (ctx) => {
-      const fresh = readPluginConfig();
-      const publicBaseUrl = fresh?.assets?.publicBaseUrl?.trim() || undefined;
-      const agentsOut: Record<string, unknown> = {};
-      for (const [id, entry] of Object.entries(fresh?.agents ?? {})) {
-        if (!entry) {
-          continue;
+    //
+    // Scope: `operator.read` — any connected operator (phone, watch relay)
+    // can fetch this, same as `agents.list`. Without an explicit scope the
+    // gateway defaults unclassified methods to `operator.admin`, which
+    // blocks the phone's TalkSpeaker from resolving voice and silently
+    // drops ElevenLabs TTS for every reply.
+    api.registerGatewayMethod(
+      "sprite-core.agents",
+      async (ctx) => {
+        const fresh = readPluginConfig();
+        const publicBaseUrl = fresh?.assets?.publicBaseUrl?.trim() || undefined;
+        const agentsOut: Record<string, unknown> = {};
+        for (const [id, entry] of Object.entries(fresh?.agents ?? {})) {
+          if (!entry) {
+            continue;
+          }
+          agentsOut[id] = {
+            ...(entry.avatar ? { avatar: entry.avatar } : {}),
+            ...(entry.voice ? { voice: entry.voice } : {}),
+            ...(entry.prompting ? { prompting: entry.prompting } : {}),
+            ...(entry.emotions ? { emotions: entry.emotions } : {}),
+          };
         }
-        agentsOut[id] = {
-          ...(entry.avatar ? { avatar: entry.avatar } : {}),
-          ...(entry.voice ? { voice: entry.voice } : {}),
-          ...(entry.prompting ? { prompting: entry.prompting } : {}),
-          ...(entry.emotions ? { emotions: entry.emotions } : {}),
-        };
-      }
-      ctx.respond(
-        true,
-        { agents: agentsOut, ...(publicBaseUrl ? { publicBaseUrl } : {}) },
-        undefined,
-      );
-    });
+        ctx.respond(
+          true,
+          { agents: agentsOut, ...(publicBaseUrl ? { publicBaseUrl } : {}) },
+          undefined,
+        );
+      },
+      { scope: "operator.read" },
+    );
 
     // Gateway RPC: ship the watch a ready-to-render character manifest. Reads
     // fresh plugin config each call so config reload is observed.

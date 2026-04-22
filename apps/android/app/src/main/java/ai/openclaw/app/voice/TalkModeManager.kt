@@ -42,7 +42,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 
-class TalkModeManager(
+internal class TalkModeManager(
   private val context: Context,
   private val scope: CoroutineScope,
   private val session: GatewaySession,

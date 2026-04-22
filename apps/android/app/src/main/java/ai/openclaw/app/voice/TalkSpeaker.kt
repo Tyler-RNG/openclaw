@@ -87,7 +87,78 @@ internal class TalkSpeaker(
         }
         val effectiveDirective = mergeWithEmotion(baseDirective, emotionDirective)
         val synthText = applyAudioTag(text, emotionDirective)
+
+        // Prefer the direct data-plane `/stream/tts` path when the agent has
+        // an ElevenLabs voice configured in SpriteCore + the plugin exposes
+        // `streamTts` + we have an operator auth token. This produces the
+        // SAME audio quality the wear relay gets (agent's actual voice,
+        // emotion directives applied) instead of whatever default voice the
+        // core `talk.speak` RPC falls back to on plugin-migrated gateways.
+        val agentVoice = if (agentId != null) resolveVoice(agentId) else null
+        val directPath = tryPhoneDataPlaneFetch(
+            text = synthText,
+            baseDirective = effectiveDirective,
+            agentVoice = agentVoice,
+            emotionDirective = emotionDirective,
+        )
+        if (directPath != null) {
+            return directPath
+        }
+
         return rpcClient.synthesize(text = synthText, directive = effectiveDirective)
+    }
+
+    /**
+     * Attempts the direct data-plane `/stream/tts` fetch for phone voice
+     * playback. Returns a [TalkSpeakResult.Success] wrapping the raw
+     * ElevenLabs audio bytes, or null when the direct path isn't
+     * available (plugin not reachable, streamTts off, agent has no voice,
+     * auth token missing) so the caller falls back to `talk.speak` RPC.
+     */
+    private suspend fun tryPhoneDataPlaneFetch(
+        text: String,
+        baseDirective: TalkDirective?,
+        agentVoice: TalkSpeakerAgentVoice?,
+        emotionDirective: SpriteCoreEmotionDirective?,
+    ): TalkSpeakResult? {
+        val dataPlane = dataPlaneLookup() ?: return null
+        if (!dataPlane.streamTtsEnabled) return null
+        val token = authTokenLookup()?.takeIf { it.isNotEmpty() } ?: return null
+
+        val wantsElevenLabs = agentVoice?.provider.equals("elevenlabs", ignoreCase = true)
+        if (wantsElevenLabs != true) return null
+
+        val voiceId = emotionDirective?.voiceId?.takeIf { it.isNotBlank() }
+            ?: baseDirective?.voiceId?.takeIf { it.isNotBlank() }
+            ?: agentVoice?.voiceId?.takeIf { it.isNotBlank() }
+            ?: return null
+
+        val raw = dataPlaneFetcher.fetchBytes(
+            baseUrl = dataPlane.baseUrl,
+            voiceId = voiceId,
+            text = text,
+            token = token,
+            emotionOverride = emotionDirective?.toWireOverride(),
+            logLabel = "talk",
+        ) ?: return null
+
+        return TalkSpeakResult.Success(
+            TalkSpeakAudio(
+                bytes = raw.bytes,
+                provider = "elevenlabs",
+                outputFormat = null,
+                voiceCompatible = true,
+                mimeType = raw.mime,
+                fileExtension = mimeToExtension(raw.mime),
+            ),
+        )
+    }
+
+    private fun mimeToExtension(mime: String): String? = when {
+        mime.contains("mpeg", ignoreCase = true) -> "mp3"
+        mime.contains("wav", ignoreCase = true) -> "wav"
+        mime.contains("ogg", ignoreCase = true) -> "ogg"
+        else -> null
     }
 
     /**

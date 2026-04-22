@@ -24,20 +24,20 @@ internal class TalkDataPlaneTtsFetcher(
     private val assetUploader: TtsAssetUploader?,
 ) {
     /**
-     * Fetches TTS audio from the gateway's data-plane `/stream/tts` route and
-     * packages the result for transport to the watch — inline for small
-     * clips, or via a DataClient asset ref for large ones.
-     *
-     * Returns `null` when the fetch fails (DNS, timeout, non-200, empty
-     * body) so the caller can fall back to the RPC path.
+     * Raw HTTP-fetch of the gateway `/stream/tts` route. Returns the
+     * synthesized audio bytes + mime type, or null on any failure so
+     * callers can fall back. Internal plumbing for both [fetch] (wear
+     * relay, which packages for DataLayer delivery) and phone voice
+     * playback (which hands bytes directly to TalkAudioPlayer).
      */
-    suspend fun fetch(
+    suspend fun fetchBytes(
         baseUrl: String,
         voiceId: String,
         text: String,
         token: String,
         emotionOverride: EmotionTtsOverride? = null,
-    ): WearTtsDelivery? = withContext(Dispatchers.IO) {
+        logLabel: String = "chat",
+    ): RawTtsAudio? = withContext(Dispatchers.IO) {
         try {
             val url = buildUrl(baseUrl, voiceId, text, token, emotionOverride)
             val conn = URL(url).openConnection() as HttpURLConnection
@@ -46,7 +46,7 @@ internal class TalkDataPlaneTtsFetcher(
             conn.requestMethod = "GET"
             val code = conn.responseCode
             if (code != 200) {
-                WearRelayLog.warn("chat", "data-plane tts HTTP $code")
+                WearRelayLog.warn(logLabel, "data-plane tts HTTP $code")
                 conn.disconnect()
                 return@withContext null
             }
@@ -54,40 +54,56 @@ internal class TalkDataPlaneTtsFetcher(
             val bytes = conn.inputStream.use { it.readBytes() }
             conn.disconnect()
             if (bytes.isEmpty()) {
-                WearRelayLog.warn("chat", "data-plane tts empty body")
+                WearRelayLog.warn(logLabel, "data-plane tts empty body")
                 return@withContext null
             }
-            WearRelayLog.info("chat", "data-plane tts${bytes.size / 1000}KB $mime")
-
-            // Small audio inlines via MessageClient (fast, no sync wait).
-            // Big audio rides DataClient Asset (no 100 KB cap).
-            if (bytes.size < TTS_INLINE_CAP_BYTES) {
-                val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-                WearTtsDelivery.Inline(audioBase64 = b64, mimeType = mime)
-            } else {
-                val uploader = assetUploader ?: run {
-                    WearRelayLog.warn("chat", "audio > cap but no asset uploader configured")
-                    return@withContext null
-                }
-                val assetId = "tts-${UUID.randomUUID().toString().take(12)}"
-                if (uploader.putAsset(assetId, bytes, mime)) {
-                    WearTtsDelivery.AssetRef(
-                        audioAssetRef = "wear-asset:tts:$assetId",
-                        mimeType = mime,
-                    )
-                } else {
-                    null
-                }
-            }
+            WearRelayLog.info(logLabel, "data-plane tts${bytes.size / 1000}KB $mime")
+            RawTtsAudio(bytes = bytes, mime = mime)
         } catch (_: UnknownHostException) {
-            WearRelayLog.warn("chat", "data-plane ttsDNS fail")
+            WearRelayLog.warn(logLabel, "data-plane ttsDNS fail")
             null
         } catch (_: SocketTimeoutException) {
-            WearRelayLog.warn("chat", "data-plane ttstimeout")
+            WearRelayLog.warn(logLabel, "data-plane ttstimeout")
             null
         } catch (e: Throwable) {
-            WearRelayLog.warn("chat", "data-plane tts: ${e.javaClass.simpleName}")
+            WearRelayLog.warn(logLabel, "data-plane tts: ${e.javaClass.simpleName}")
             null
+        }
+    }
+
+    /**
+     * Fetches TTS audio and packages it for transport to the watch —
+     * inline base64 for small clips, DataClient asset ref for large ones.
+     * Returns null on any failure.
+     */
+    suspend fun fetch(
+        baseUrl: String,
+        voiceId: String,
+        text: String,
+        token: String,
+        emotionOverride: EmotionTtsOverride? = null,
+    ): WearTtsDelivery? {
+        val raw = fetchBytes(baseUrl, voiceId, text, token, emotionOverride) ?: return null
+
+        // Small audio inlines via MessageClient (fast, no sync wait).
+        // Big audio rides DataClient Asset (no 100 KB cap).
+        return if (raw.bytes.size < TTS_INLINE_CAP_BYTES) {
+            val b64 = Base64.encodeToString(raw.bytes, Base64.NO_WRAP)
+            WearTtsDelivery.Inline(audioBase64 = b64, mimeType = raw.mime)
+        } else {
+            val uploader = assetUploader ?: run {
+                WearRelayLog.warn("chat", "audio > cap but no asset uploader configured")
+                return null
+            }
+            val assetId = "tts-${UUID.randomUUID().toString().take(12)}"
+            if (uploader.putAsset(assetId, raw.bytes, raw.mime)) {
+                WearTtsDelivery.AssetRef(
+                    audioAssetRef = "wear-asset:tts:$assetId",
+                    mimeType = raw.mime,
+                )
+            } else {
+                null
+            }
         }
     }
 
@@ -120,6 +136,16 @@ internal class TalkDataPlaneTtsFetcher(
         private const val DEFAULT_MIME = "audio/mpeg"
     }
 }
+
+/**
+ * Raw TTS audio bytes straight off the gateway's `/stream/tts` stream.
+ * Used by both the wear relay path (packaged into [WearTtsDelivery]) and
+ * the phone voice path (wrapped as [TalkSpeakAudio] for playback).
+ */
+internal data class RawTtsAudio(
+    val bytes: ByteArray,
+    val mime: String,
+)
 
 /**
  * Emotion-driven overrides for the `/stream/tts` request. Added in Phase 3 as

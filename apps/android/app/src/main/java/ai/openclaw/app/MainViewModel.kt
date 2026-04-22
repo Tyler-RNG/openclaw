@@ -317,33 +317,43 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
       .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
   /**
-   * Tap-to-record on the agent dial: tap the agent's avatar to start
-   * recording a voice message for that agent; tap again to stop early.
-   * Does NOT navigate — the recording runs in place and the reply plays
-   * back via the existing voice-reply speaker.
+   * Press-and-hold voice capture on the agent dial. Matches the watch's
+   * protocol: press the avatar to start recording, release to stop and
+   * send. Does NOT navigate — the recording runs in place and the reply
+   * plays back via the existing voice-reply speaker.
    *
-   * Tap semantics:
-   * - Mic off → set active agent to [agentId] + enable mic (start listening)
-   * - Mic on + same agent → disable mic (stop listening; recognizer drains)
-   * - Mic on + different agent → no-op (must stop the current recording
-   *   before switching; avoids mid-capture session-key races).
+   * Call [startVoiceForAgent] on pointer-down and [stopVoiceForAgent] on
+   * pointer-up (or cancellation). If the user presses a different agent
+   * while one is still capturing, [startVoiceForAgent] transparently
+   * ends the previous capture first.
    */
-  fun toggleVoiceForAgent(agentId: String) {
+  fun startVoiceForAgent(agentId: String) {
     val runtime = ensureRuntime()
     val currentActive = activeAgentId.value
     val currentlyOn = micEnabled.value
 
-    if (currentlyOn) {
-      if (currentActive == agentId) {
-        runtime.setMicEnabled(false)
-      }
-      return
+    // If a different agent is currently capturing, stop it first so the
+    // recognizer's buffered audio is flushed to that agent (not the new one).
+    if (currentlyOn && currentActive != null && currentActive != agentId) {
+      runtime.setMicEnabled(false)
     }
-
     if (currentActive != agentId) {
       runtime.setActiveAgent(agentId)
     }
     runtime.setMicEnabled(true)
+  }
+
+  /**
+   * Stop the in-flight voice capture for [agentId]. No-op if the current
+   * active agent doesn't match (e.g., the user released after the capture
+   * already naturally completed on silence). The recognizer drains with a
+   * short grace period so a trailing partial transcript still gets sent.
+   */
+  fun stopVoiceForAgent(agentId: String) {
+    val runtime = ensureRuntime()
+    if (activeAgentId.value != agentId) return
+    if (!micEnabled.value) return
+    runtime.setMicEnabled(false)
   }
 
   fun clearChatDraft() {

@@ -1651,6 +1651,54 @@ class NodeRuntime(
     chat.handleGatewayEvent(event, payloadJson)
   }
 
+  /**
+   * Build a [WearDataPlane] from the SpriteCore plugin's config block when
+   * the legacy gateway-core `dataPlane` block isn't present. The plugin
+   * migration moved asset serving + `/stream/tts` into SpriteCore, so the
+   * client reads `plugins.entries["sprite-core"].config.{assets, streamTts}`
+   * to get the same info.
+   *
+   * Returns null (logs a diagnostic) when neither the sprite-core entry nor
+   * a usable base URL is present — the wear relay then falls back to the
+   * `talk.speak` RPC and the avatar rewriter skips URL rewriting.
+   */
+  private fun resolveDataPlaneFromSpriteCore(config: JsonObject?): WearDataPlane? {
+    val plugins = config?.get("plugins").asObjectOrNull()
+    val entries = plugins?.get("entries").asObjectOrNull()
+    val spriteCore = entries?.get("sprite-core").asObjectOrNull()
+    val pluginConfig = spriteCore?.get("config").asObjectOrNull()
+    if (pluginConfig == null) {
+      WearRelayLog.info("config", "dataPlane not configured (no sprite-core entry)")
+      return null
+    }
+    val assets = pluginConfig["assets"].asObjectOrNull()
+    val streamTtsCfg = pluginConfig["streamTts"].asObjectOrNull()
+    val baseUrl = assets?.get("publicBaseUrl").asStringOrNull()?.trim()
+    if (baseUrl.isNullOrEmpty()) {
+      WearRelayLog.info(
+        "config",
+        "dataPlane(sprite-core): missing assets.publicBaseUrl",
+      )
+      return null
+    }
+    fun pluginBool(obj: JsonObject?, name: String): Boolean {
+      val prim = obj?.get(name) as? JsonPrimitive ?: return false
+      return prim.content.toBooleanStrictOrNull() ?: false
+    }
+    val publicAssets = pluginBool(assets, "publicAssets")
+    val streamTtsEnabled = pluginBool(streamTtsCfg, "enabled")
+    val parsed = WearDataPlane(
+      baseUrl = baseUrl.trimEnd('/'),
+      publicAssets = publicAssets,
+      streamTts = streamTtsEnabled,
+    )
+    WearRelayLog.info(
+      "config",
+      "dataPlane(sprite-core) ${parsed.baseUrl} publicAssets=${parsed.publicAssets} streamTts=${parsed.streamTts}",
+    )
+    return parsed
+  }
+
   private fun parseChatSendRunId(response: String): String? {
     return try {
       val root = json.parseToJsonElement(response).asObjectOrNull() ?: return null
@@ -1675,26 +1723,36 @@ class NodeRuntime(
 
       // Data plane base URL — used by the wear relay to rewrite
       // relative avatar paths and to build /stream/tts URLs.
+      //
+      // Two config shapes are supported:
+      //  (1) Legacy gateway-core: top-level `config.dataPlane` block with
+      //      `baseUrl` / `publicAssets` / `streamTts` fields.
+      //  (2) Plugin-owned: the SpriteCore plugin now owns asset serving +
+      //      /stream/tts, exposed at
+      //      `config.plugins.entries["sprite-core"].config.{assets, streamTts}`.
+      //
+      // Prefer (1) if present for back-compat; otherwise synthesize the
+      // shape from the SpriteCore plugin config so the watch TTS
+      // direct-path and avatar rewriter keep working on plugin-only gateways.
       val dp = config?.get("dataPlane").asObjectOrNull()
-      val baseUrl = dp?.get("baseUrl").asStringOrNull()?.trim()
-      _wearDataPlane.value = if (dp != null && !baseUrl.isNullOrEmpty()) {
+      val legacyBaseUrl = dp?.get("baseUrl").asStringOrNull()?.trim()
+      _wearDataPlane.value = if (dp != null && !legacyBaseUrl.isNullOrEmpty()) {
         fun boolField(name: String): Boolean {
           val prim = dp[name] as? JsonPrimitive ?: return false
           return prim.content.toBooleanStrictOrNull() ?: false
         }
         val parsed = WearDataPlane(
-          baseUrl = baseUrl.trimEnd('/'),
+          baseUrl = legacyBaseUrl.trimEnd('/'),
           publicAssets = boolField("publicAssets"),
           streamTts = boolField("streamTts"),
         )
         WearRelayLog.info(
           "config",
-          "dataPlane ${parsed.baseUrl} publicAssets=${parsed.publicAssets} streamTts=${parsed.streamTts}",
+          "dataPlane(legacy) ${parsed.baseUrl} publicAssets=${parsed.publicAssets} streamTts=${parsed.streamTts}",
         )
         parsed
       } else {
-        WearRelayLog.info("config", "dataPlane not configured")
-        null
+        resolveDataPlaneFromSpriteCore(config)
       }
 
       updateHomeCanvasState()

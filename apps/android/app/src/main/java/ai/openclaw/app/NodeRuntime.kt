@@ -443,7 +443,10 @@ class NodeRuntime(
    * — we pay the prefix token cost only once per conversation. Resets to
    * empty on app restart (acceptable: one redundant teaching per restart).
    */
-  private val primedAvatarSessionKeys: java.util.Set<String> =
+  // Let Kotlin infer MutableSet<String> from the KeySetView rather than
+  // narrowing to java.util.Set<String> — the widening assignment fails
+  // under Kotlin 2.x's stricter SAM / raw-type handling.
+  private val primedAvatarSessionKeys =
     java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
   init {

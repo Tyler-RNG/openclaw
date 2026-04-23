@@ -35,9 +35,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -85,6 +87,7 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
   val micLiveTranscript by viewModel.micLiveTranscript.collectAsState()
   val micQueuedMessages by viewModel.micQueuedMessages.collectAsState()
   val micConversation by viewModel.micConversation.collectAsState()
+  val activeAgentId by viewModel.activeAgentId.collectAsState()
   val micInputLevel by viewModel.micInputLevel.collectAsState()
   val micIsSending by viewModel.micIsSending.collectAsState()
 
@@ -200,6 +203,36 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             style = mobileCallout,
             color = mobileText,
+          )
+        }
+      }
+
+      // "New chat" pill — rotates the active agent's session key so the
+      // next user turn starts from an empty gateway history. Disabled when
+      // no agent is active (e.g., before pairing completes).
+      val resetTargetAgent = activeAgentId
+      if (resetTargetAgent != null) {
+        Row(
+          modifier = Modifier
+            .padding(bottom = 8.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .background(mobileAccentSoft)
+            .border(1.dp, mobileAccent.copy(alpha = 0.35f), RoundedCornerShape(999.dp))
+            .clickable { viewModel.newSessionForAgent(resetTargetAgent) }
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Icon(
+            imageVector = Icons.Default.Refresh,
+            contentDescription = "Start new chat",
+            modifier = Modifier.size(16.dp),
+            tint = mobileAccent,
+          )
+          Text(
+            text = "New chat",
+            style = mobileCaption2,
+            color = mobileAccent,
           )
         }
       }

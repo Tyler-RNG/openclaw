@@ -9,6 +9,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -78,6 +79,10 @@ fun CharacterAvatar(
         bitmap = bitmap.asImageBitmap(),
         contentDescription = contentDescription,
         contentScale = ContentScale.Crop,
+        // Sprite/atlas frames are taller than the watch's square tile; pin to
+        // TopCenter so the crop bites off the bottom of the frame and the head
+        // fills the tile like a headshot.
+        alignment = Alignment.TopCenter,
         modifier = modifier.fillMaxSize(),
     )
 }

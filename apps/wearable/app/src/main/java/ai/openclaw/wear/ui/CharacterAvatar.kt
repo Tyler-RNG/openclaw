@@ -9,7 +9,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -75,14 +74,23 @@ fun CharacterAvatar(
     val ref by player.currentRef.collectAsState()
     val bitmap: Bitmap? = ref?.let { frameSource.frame(it) }
     if (bitmap == null) return
+    // Crop to the biggest top square at the pixel level. Compose's
+    // ContentScale.Crop + Alignment.TopCenter did not produce the intended
+    // effect on-watch, so we slice the bitmap itself: for W×H sources the
+    // result is a (min(W,H))² bitmap taken from y=0, horizontally centered.
+    // The resulting bitmap is square, so any ContentScale behaves the same.
+    val topSquare = remember(bitmap) { bitmap.topSquare() }
     Image(
-        bitmap = bitmap.asImageBitmap(),
+        bitmap = topSquare.asImageBitmap(),
         contentDescription = contentDescription,
         contentScale = ContentScale.Crop,
-        // Sprite/atlas frames are taller than the watch's square tile; pin to
-        // TopCenter so the crop bites off the bottom of the frame and the head
-        // fills the tile like a headshot.
-        alignment = Alignment.TopCenter,
         modifier = modifier.fillMaxSize(),
     )
+}
+
+private fun Bitmap.topSquare(): Bitmap {
+    val side = minOf(width, height)
+    if (width == side && height == side) return this
+    val x = (width - side) / 2
+    return Bitmap.createBitmap(this, x, 0, side, side)
 }

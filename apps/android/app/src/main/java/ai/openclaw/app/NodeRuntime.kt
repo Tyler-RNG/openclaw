@@ -21,6 +21,7 @@ import ai.openclaw.app.gateway.GatewayTlsProbeResult
 import ai.openclaw.app.gateway.probeGatewayTlsFingerprint
 import ai.openclaw.app.node.*
 import ai.openclaw.app.protocol.OpenClawCanvasA2UIAction
+import ai.openclaw.app.voice.AvatarPromptBuilder
 import ai.openclaw.app.voice.MicCaptureManager
 import ai.openclaw.app.voice.SttResult
 import ai.openclaw.app.voice.TalkDataPlaneSttFetcher
@@ -443,7 +444,7 @@ class NodeRuntime(
    * empty on app restart (acceptable: one redundant teaching per restart).
    */
   private val primedAvatarSessionKeys: java.util.Set<String> =
-    java.util.concurrent.ConcurrentHashMap.newKeySet()
+    java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
   init {
     DeviceNotificationListenerService.setNodeEventSink { event, payloadJson ->

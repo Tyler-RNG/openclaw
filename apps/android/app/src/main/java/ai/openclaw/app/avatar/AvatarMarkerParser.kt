@@ -23,7 +23,15 @@ package ai.openclaw.app.avatar
 const val AVATAR_MARKER_OPEN = "<<<"
 const val AVATAR_MARKER_CLOSE = ">>>"
 
-data class AvatarMarker(val state: String)
+/**
+ * One parsed `<<<state>>>` / `<<<state-N>>>` marker.
+ *
+ * [count] semantics forwarded from the wire format:
+ *   null  — bare `<<<state>>>`, defaults to "loop until next marker" client-side.
+ *   0     — explicit loop (same as bare).
+ *   N >= 1 — play animation N times and hold on the last frame.
+ */
+data class AvatarMarker(val state: String, val count: Int? = null)
 
 data class AvatarParseResult(
     val cleanedText: String,
@@ -32,16 +40,38 @@ data class AvatarParseResult(
 
 /**
  * Text segment produced by [splitByMarkers]. `emotion` is the state name of
- * the marker immediately preceding this segment, or `null` for the leading
- * segment (before any marker) and for segments introduced by an invalid
- * marker shape (which is emitted as literal text).
+ * the marker immediately preceding this segment (with any `-N` count suffix
+ * stripped off into [emotionCount]), or `null` for the leading segment
+ * (before any marker) and for segments introduced by an invalid marker
+ * shape (which is emitted as literal text).
  */
-data class TextSegmentWithEmotion(val text: String, val emotion: String?)
+data class TextSegmentWithEmotion(
+    val text: String,
+    val emotion: String?,
+    val emotionCount: Int? = null,
+)
 
 private val STATE_NAME_RE = Regex("^[a-zA-Z0-9_-]+$")
 
 private fun isValidStateName(name: String): Boolean =
     name.isNotEmpty() && STATE_NAME_RE.matches(name)
+
+/**
+ * Splits a raw marker body into (state, count). Triggers on the *last* dash
+ * when the suffix is a non-negative integer — `head_cocked_1` (N=1) becomes
+ * `head_cocked` + 1, but `head-cocked` (no digits after dash) stays as
+ * `head-cocked` + null. Returns null count when the body is all-state.
+ */
+internal fun resolveStateAndCount(body: String): Pair<String, Int?> {
+    val dashIdx = body.lastIndexOf('-')
+    if (dashIdx <= 0 || dashIdx == body.length - 1) return body to null
+    val countPart = body.substring(dashIdx + 1)
+    val count = countPart.toIntOrNull()
+    if (count == null || count < 0) return body to null
+    val state = body.substring(0, dashIdx)
+    if (state.isEmpty()) return body to null
+    return state to count
+}
 
 class AvatarMarkerParser {
     private var buffer: String = ""
@@ -99,6 +129,7 @@ fun splitByMarkers(text: String): List<TextSegmentWithEmotion> {
     val segments = mutableListOf<TextSegmentWithEmotion>()
     val currentText = StringBuilder()
     var currentEmotion: String? = null
+    var currentEmotionCount: Int? = null
     var i = 0
     while (i < text.length) {
         val openAt = text.indexOf(AVATAR_MARKER_OPEN, i)
@@ -114,15 +145,23 @@ fun splitByMarkers(text: String): List<TextSegmentWithEmotion> {
             currentText.append(text, openAt, text.length)
             break
         }
-        val state = text.substring(openAt + AVATAR_MARKER_OPEN.length, closeAt)
-        if (isValidStateName(state)) {
+        val rawBody = text.substring(openAt + AVATAR_MARKER_OPEN.length, closeAt)
+        if (isValidStateName(rawBody)) {
+            val (stateName, stateCount) = resolveStateAndCount(rawBody)
             // Close the current segment and start a new one tagged with the
             // marker's state.
             if (currentText.isNotEmpty()) {
-                segments.add(TextSegmentWithEmotion(currentText.toString(), currentEmotion))
+                segments.add(
+                    TextSegmentWithEmotion(
+                        currentText.toString(),
+                        currentEmotion,
+                        currentEmotionCount,
+                    ),
+                )
                 currentText.setLength(0)
             }
-            currentEmotion = state
+            currentEmotion = stateName
+            currentEmotionCount = stateCount
         } else {
             // Invalid marker shape — emit verbatim as literal text within
             // the current segment.
@@ -131,7 +170,9 @@ fun splitByMarkers(text: String): List<TextSegmentWithEmotion> {
         i = closeAt + AVATAR_MARKER_CLOSE.length
     }
     if (currentText.isNotEmpty()) {
-        segments.add(TextSegmentWithEmotion(currentText.toString(), currentEmotion))
+        segments.add(
+            TextSegmentWithEmotion(currentText.toString(), currentEmotion, currentEmotionCount),
+        )
     }
     return segments
 }
@@ -174,7 +215,8 @@ private fun processSafePrefix(combined: String): ProcessResult {
         }
         val rawState = combined.substring(openAt + AVATAR_MARKER_OPEN.length, closeAt)
         if (isValidStateName(rawState)) {
-            markers.add(AvatarMarker(rawState))
+            val (stateName, stateCount) = resolveStateAndCount(rawState)
+            markers.add(AvatarMarker(stateName, stateCount))
         } else {
             // Invalid marker shape — emit verbatim so nothing is silently lost.
             out.append(combined, openAt, closeAt + AVATAR_MARKER_CLOSE.length)

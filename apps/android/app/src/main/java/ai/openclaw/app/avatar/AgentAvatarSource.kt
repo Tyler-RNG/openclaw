@@ -49,6 +49,20 @@ class AgentAvatarSource(
     private val _agentStates = MutableStateFlow<Map<String, String>>(emptyMap())
     val agentStates: StateFlow<Map<String, String>> = _agentStates.asStateFlow()
 
+    /**
+     * Monotonically-versioned state signal per agent. Carries the same name
+     * as [agentStates] plus the optional `count` from the parsed
+     * `<<<state-N>>>` marker and a [version] that bumps on every dispatch
+     * even when the name is unchanged — so the UI's LaunchedEffect re-fires
+     * and the animation player replays the state if the model emits the
+     * same marker twice in a row.
+     */
+    private val _agentMarkerSignals = MutableStateFlow<Map<String, AvatarMarkerSignal>>(emptyMap())
+    val agentMarkerSignals: StateFlow<Map<String, AvatarMarkerSignal>> =
+        _agentMarkerSignals.asStateFlow()
+
+    private val signalVersionSeq = java.util.concurrent.atomic.AtomicLong(0L)
+
     private val fetchMutex = Mutex()
 
     /**
@@ -69,12 +83,22 @@ class AgentAvatarSource(
 
     /**
      * Update the current state for an agent. Called by the chat-reply path
-     * when an `[avatar:<state>]` marker fires. Watch still gets its own
-     * state signal via DataClient publishAgentState; this feeds the phone's
-     * own UI.
+     * when an `<<<state>>>` or `<<<state-N>>>` marker fires. Watch still
+     * gets its own state signal via DataClient publishAgentState; this
+     * feeds the phone's own UI.
+     *
+     * [count] semantics:
+     *   null or 0 → loop the animation until the next state dispatch
+     *   N >= 1    → play N times and hold on the last frame
      */
-    fun setAgentState(agentId: String, stateName: String) {
+    fun setAgentState(agentId: String, stateName: String, count: Int? = null) {
         _agentStates.update { it + (agentId to stateName) }
+        val signal = AvatarMarkerSignal(
+            state = stateName,
+            count = count,
+            version = signalVersionSeq.incrementAndGet(),
+        )
+        _agentMarkerSignals.update { it + (agentId to signal) }
     }
 
     /**
@@ -180,6 +204,19 @@ class AgentAvatarSource(
         val agentId: String,
         val envelope: CharacterManifestEnvelope,
         val assetBytes: Map<String, ByteArray>,
+    )
+
+    /**
+     * Versioned per-agent animation signal. [version] bumps on every
+     * [setAgentState] call so UI consumers keyed on the signal re-trigger
+     * their LaunchedEffect even when the state name is unchanged. [count]
+     * is forwarded from the parsed `<<<state-N>>>` marker and governs
+     * playback cadence in [SpriteAnimationPlayer].
+     */
+    data class AvatarMarkerSignal(
+        val state: String,
+        val count: Int?,
+        val version: Long,
     )
 
     companion object {

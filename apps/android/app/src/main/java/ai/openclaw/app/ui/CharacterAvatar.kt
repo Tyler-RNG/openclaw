@@ -12,6 +12,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import ai.openclaw.app.avatar.AgentAvatarSource
 import ai.openclaw.displaykit.AnimationGraph
 import ai.openclaw.displaykit.CharacterManifestEnvelope
 import ai.openclaw.displaykit.SpriteAnimationPlayer
@@ -33,6 +34,15 @@ fun CharacterAvatar(
     currentState: String?,
     contentDescription: String?,
     modifier: Modifier = Modifier,
+    /**
+     * Versioned signal from the client-parsed `<<<state-N>>>` marker.
+     * When present, takes precedence over [currentState] and drives the
+     * player with the embedded count so "play once and hold" / "play N
+     * times" semantics are honoured. Keyed by [AgentAvatarSource.AvatarMarkerSignal.version]
+     * so the LaunchedEffect re-triggers even on identical back-to-back
+     * marker dispatches.
+     */
+    markerSignal: AgentAvatarSource.AvatarMarkerSignal? = null,
 ) {
     val mode = remember(envelope.revision, agentId) {
         CharacterManifestJson.pickMode(envelope.manifest)
@@ -52,11 +62,23 @@ fun CharacterAvatar(
     }
     DisposableEffect(player) { onDispose { player.dispose() } }
 
-    LaunchedEffect(player, currentState) {
-        currentState?.takeIf { it.isNotBlank() }?.let { stateName ->
-            val resolved = envelope.manifest.stateMap[stateName] ?: stateName
+    // Prefer the versioned marker signal (carries count + a monotonic
+    // version so repeat markers re-fire); fall back to the plain state
+    // name for code paths that haven't been migrated yet.
+    if (markerSignal != null) {
+        LaunchedEffect(player, markerSignal.version) {
+            val resolved = envelope.manifest.stateMap[markerSignal.state] ?: markerSignal.state
             if (envelope.manifest.content[mode]?.animations?.containsKey(resolved) == true) {
-                player.requestState(resolved)
+                player.requestState(resolved, playCount = markerSignal.count)
+            }
+        }
+    } else {
+        LaunchedEffect(player, currentState) {
+            currentState?.takeIf { it.isNotBlank() }?.let { stateName ->
+                val resolved = envelope.manifest.stateMap[stateName] ?: stateName
+                if (envelope.manifest.content[mode]?.animations?.containsKey(resolved) == true) {
+                    player.requestState(resolved)
+                }
             }
         }
     }

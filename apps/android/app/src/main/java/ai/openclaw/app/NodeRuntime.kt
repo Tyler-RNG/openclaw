@@ -222,9 +222,24 @@ class NodeRuntime(
   private val _pendingGatewayTrust = MutableStateFlow<GatewayTrustPrompt?>(null)
   val pendingGatewayTrust: StateFlow<GatewayTrustPrompt?> = _pendingGatewayTrust.asStateFlow()
 
+  /**
+   * Per-agent session suffix map. The dial's "new chat" button rotates the
+   * suffix for that agent; keyed on [agentSessionOverrides], absent entries
+   * mean "use the default deterministic key." Kept in-memory only — a fresh
+   * session is forgotten on app restart (the next launch resumes whatever
+   * conversation the gateway has for the default key). This is deliberate:
+   * persisting overrides would require a migration path on every schema bump
+   * and the user-visible behaviour ("this agent's chat is fresh") is clearer
+   * if it's explicitly scoped to the current session.
+   */
+  private val agentSessionOverrides = java.util.concurrent.ConcurrentHashMap<String, String>()
+
   private fun resolveNodeMainSessionKey(agentId: String? = gatewayDefaultAgentId): String {
     val deviceId = identityStore.loadOrCreate().deviceId
-    return buildNodeMainSessionKey(deviceId, agentId)
+    val baseKey = buildNodeMainSessionKey(deviceId, agentId)
+    val id = agentId?.trim()?.ifEmpty { null } ?: return baseKey
+    val override = agentSessionOverrides[id] ?: return baseKey
+    return "$baseKey:r-$override"
   }
 
   private val _mainSessionKey = MutableStateFlow(resolveNodeMainSessionKey())
@@ -444,6 +459,14 @@ class NodeRuntime(
       session = operatorSession,
       json = json,
       supportsChatSubscribe = false,
+      resolveOutgoingMessage = { sessionKey, text ->
+        // Chat-tab first-message-per-session gets the sprite-core-mode
+        // prefix, same as the voice tab and wear relay. Shared priming set
+        // ensures the model is taught the <<<state-N>>> vocabulary once
+        // per sessionKey regardless of which surface fires first.
+        val agentId = resolveAgentIdFromMainSessionKey(sessionKey)
+        maybePrependAvatarPrompt(sessionKey, agentId, text)
+      },
     ).also {
       it.applyMainSessionKey(_mainSessionKey.value)
     }
@@ -534,7 +557,7 @@ class NodeRuntime(
         val activeAgentId = resolveActiveAgentId().takeIf { it.isNotEmpty() }
         if (activeAgentId != null && markers.isNotEmpty()) {
           for (marker in markers) {
-            agentAvatarSource.setAgentState(activeAgentId, marker.state)
+            agentAvatarSource.setAgentState(activeAgentId, marker.state, marker.count)
             PhoneDiagLog.info(
               "avatar",
               "$activeAgentId ← ${marker.state} (marker, count=${marker.count ?: "loop"})",
@@ -1275,6 +1298,32 @@ class NodeRuntime(
     syncMainSessionKey(agentId)
   }
 
+  /**
+   * Start a fresh conversation with [agentId] by rotating its session-key
+   * suffix. The gateway's history for the new key is empty, so the model
+   * starts the next turn with no context. Also clears the phone's local
+   * voice-tab conversation list and interrupts any in-flight playback so
+   * the UI reflects the reset immediately.
+   */
+  fun newSessionForAgent(agentId: String) {
+    val id = agentId.trim().ifEmpty { return }
+    val fresh = System.currentTimeMillis().toString(36)
+    agentSessionOverrides[id] = fresh
+    PhoneDiagLog.info("agent", "$id ← new session (suffix=$fresh)")
+    stopVoicePlayback()
+    micCapture.clearConversation()
+    // Clear the primed-avatar cache for the old key so the fresh session
+    // gets the sprite-core-mode prompt prefix on its first message.
+    // (The new key hasn't been primed yet either, so no explicit add.)
+    primedAvatarSessionKeys.clear()
+    // Force a mainSessionKey refresh so ChatController + TalkModeManager
+    // pick up the new key on their next send. syncMainSessionKey short-
+    // circuits when the value is unchanged, so pass through
+    // _mainSessionKey.value = "" first to guarantee the update fires.
+    _mainSessionKey.value = ""
+    syncMainSessionKey(id)
+  }
+
   fun abortChat() {
     chat.abort()
   }
@@ -1433,6 +1482,12 @@ class NodeRuntime(
   data class WearChatAudioSegment(
     val text: String,
     val emotion: String?,
+    /**
+     * Count from the parsed `<<<state-N>>>` marker, forwarded so the watch
+     * can honour the same "play N times and hold" semantics the phone's
+     * CharacterAvatar does. null = loop (default for bare `<<<state>>>`).
+     */
+    val emotionCount: Int? = null,
     val audioUrl: String? = null,
     val audioBase64: String? = null,
     val audioAssetRef: String? = null,
@@ -1486,9 +1541,15 @@ class NodeRuntime(
         }
         Log.d(TAG_WEAR, "$agentId baseline=$baseline")
 
+        // Prepend the avatar-prompt prefix on the FIRST message per session
+        // so the model learns the <<<state-N>>> vocabulary once, then the
+        // wear-brevity directive, then the actual user text. Subsequent
+        // turns in the same watch session skip the avatar prefix (priming
+        // is cached in primedAvatarSessionKeys).
+        val primedMessage = maybePrependAvatarPrompt(sessionKey, agentId, WEAR_BREVITY_PREFIX + userText)
         val params = kotlinx.serialization.json.buildJsonObject {
           put("sessionKey", kotlinx.serialization.json.JsonPrimitive(sessionKey))
-          put("message", kotlinx.serialization.json.JsonPrimitive(WEAR_BREVITY_PREFIX + userText))
+          put("message", kotlinx.serialization.json.JsonPrimitive(primedMessage))
           put("thinking", kotlinx.serialization.json.JsonPrimitive("low"))
           put("timeoutMs", kotlinx.serialization.json.JsonPrimitive(60_000))
           put("idempotencyKey", kotlinx.serialization.json.JsonPrimitive(UUID.randomUUID().toString()))
@@ -1707,6 +1768,7 @@ class NodeRuntime(
       WearChatAudioSegment(
         text = segment.text,
         emotion = segment.emotion,
+        emotionCount = segment.emotionCount,
         audioUrl = (delivery as? WearTtsDelivery.StreamingUrl)?.audioUrl,
         audioBase64 = (delivery as? WearTtsDelivery.Inline)?.audioBase64,
         audioAssetRef = (delivery as? WearTtsDelivery.AssetRef)?.audioAssetRef,

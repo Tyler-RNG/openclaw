@@ -3,7 +3,9 @@ package ai.openclaw.app.ui
 import android.graphics.Color as AndroidColor
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +19,9 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -54,6 +59,7 @@ fun AgentDialScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
   val characterManifests by viewModel.characterManifests.collectAsState()
   val characterAssets by viewModel.characterAssets.collectAsState()
   val agentStates by viewModel.agentStates.collectAsState()
+  val agentMarkerSignals by viewModel.agentMarkerSignals.collectAsState()
   val activeAgentId by viewModel.activeAgentId.collectAsState()
   val micIsListening by viewModel.micIsListening.collectAsState()
   val micIsSending by viewModel.micIsSending.collectAsState()
@@ -91,6 +97,36 @@ fun AgentDialScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
       ) {
+        // "New chat" pill — rotates this agent's session key so the next
+        // user turn starts from an empty gateway history. Sits just above
+        // the press-to-talk ring so it's discoverable without crowding the
+        // avatar. Per-agent: pressing this only resets the current dial
+        // page's agent, leaving other agents' conversations untouched.
+        Row(
+          modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(themeColor.copy(alpha = 0.12f))
+            .border(1.dp, themeColor.copy(alpha = 0.4f), RoundedCornerShape(999.dp))
+            .clickable { viewModel.newSessionForAgent(agent.id) }
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Icon(
+            imageVector = Icons.Default.Refresh,
+            contentDescription = "Start new chat with ${agent.name ?: agent.id}",
+            modifier = Modifier.size(16.dp),
+            tint = themeColor,
+          )
+          Text(
+            text = "New chat",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            color = themeColor,
+          )
+        }
+        Spacer(modifier = Modifier.height(14.dp))
+
         // Theme ring around the avatar — subtle gradient so it feels alive
         // without competing with the animation.
         Box(
@@ -137,6 +173,7 @@ fun AgentDialScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                 currentState = agentStates[agent.id],
                 contentDescription = agent.name ?: agent.id,
                 modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(52.dp)),
+                markerSignal = agentMarkerSignals[agent.id],
               )
             } else {
               // No atlas manifest — fall back to image → emoji → letter

@@ -1,5 +1,7 @@
 package ai.openclaw.app.voice
 
+import ai.openclaw.app.avatar.AvatarMarker
+import ai.openclaw.app.avatar.parseAvatarMarkers
 import android.Manifest
 import android.content.Context
 import android.content.Intent
@@ -56,7 +58,7 @@ class MicCaptureManager(
    * round-tripping through a gateway-emitted state event. The [String] text
    * is the cleaned (marker-stripped) reply — handy for diagnostic logging.
    */
-  private val onAssistantMarkers: (cleaned: String, markers: List<AvatarMarkerParser.Marker>) -> Unit = { _, _ -> },
+  private val onAssistantMarkers: (cleaned: String, markers: List<AvatarMarker>) -> Unit = { _, _ -> },
   /**
    * Transcribe the given WAV file via the gateway's `/stream/stt` proxy.
    * Returns the committed transcript, or null when the gateway can't reach
@@ -163,6 +165,20 @@ class MicCaptureManager(
   private val ttsPauseLock = Any()
   private var ttsPauseDepth = 0
   private var resumeMicAfterTts = false
+
+  /**
+   * Drop the voice-tab conversation history. Called when the dial rotates
+   * an agent's session — the UI should show a blank slate for the fresh
+   * conversation. Doesn't touch the pending turn or the queued-message
+   * buffer (those already get cleaned up by completePendingTurn / drain).
+   */
+  fun clearConversation() {
+    _conversation.value = emptyList()
+    _liveTranscript.value = null
+    pendingAssistantEntryId = null
+    flushedPartialTranscript = null
+    PhoneDiagLog.info("mic", "conversation cleared (new session)")
+  }
 
   private fun enqueueMessage(message: String) {
     synchronized(messageQueueLock) {
@@ -454,13 +470,13 @@ class MicCaptureManager(
           // cumulative (each one replaces the previous); firing marker
           // callbacks on every delta would re-dispatch the same emotion
           // repeatedly. The "final" branch handles dispatch once.
-          val parsed = AvatarMarkerParser.parse(rawDelta)
+          val parsed = parseAvatarMarkers(rawDelta)
           upsertPendingAssistant(text = parsed.cleanedText.trim(), isStreaming = true)
         }
       }
       "final" -> {
         val rawFinal = parseAssistantText(payload)?.trim().orEmpty()
-        val parsed = AvatarMarkerParser.parse(rawFinal)
+        val parsed = parseAvatarMarkers(rawFinal)
         val finalText = parsed.cleanedText
         PhoneDiagLog.incoming(
           "mic",

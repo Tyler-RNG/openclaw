@@ -94,6 +94,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
   /** Current avatar state per agent (`[avatar:X]` markers → state name). */
   val agentStates: StateFlow<Map<String, String>> =
     runtimeState(initial = emptyMap()) { it.agentAvatarSource.agentStates }
+  /**
+   * Versioned per-agent marker signal — carries state + play count for
+   * `<<<state-N>>>` markers and a monotonic version so repeat markers
+   * re-trigger the UI's LaunchedEffect even when the state name is the
+   * same. Consumed by CharacterAvatar to drive the animation player.
+   */
+  val agentMarkerSignals: StateFlow<Map<String, ai.openclaw.app.avatar.AgentAvatarSource.AvatarMarkerSignal>> =
+    runtimeState(initial = emptyMap()) { it.agentAvatarSource.agentMarkerSignals }
   val statusText: StateFlow<String> = runtimeState(initial = "Offline") { it.statusText }
   val serverName: StateFlow<String?> = runtimeState(initial = null) { it.serverName }
   val remoteAddress: StateFlow<String?> = runtimeState(initial = null) { it.remoteAddress }
@@ -356,6 +364,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     if (activeAgentId.value != agentId) return
     if (!micEnabled.value) return
     runtime.stopHoldMic()
+  }
+
+  /**
+   * Start a fresh conversation with [agentId]. Rotates the agent's session
+   * key so the gateway's history for the new key is empty and clears the
+   * local voice-tab conversation UI. Wired to the dial's "new chat"
+   * button.
+   */
+  fun newSessionForAgent(agentId: String) {
+    ensureRuntime().newSessionForAgent(agentId)
   }
 
   fun clearChatDraft() {

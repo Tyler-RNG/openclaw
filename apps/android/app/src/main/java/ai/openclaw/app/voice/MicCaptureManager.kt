@@ -50,6 +50,14 @@ class MicCaptureManager(
   private val sendToGateway: suspend (message: String, onRunIdKnown: (String) -> Unit) -> String?,
   private val speakAssistantReply: suspend (String) -> Unit = {},
   /**
+   * Fired once per completed assistant reply, with the ordered list of
+   * `<<<state-N>>>` markers parsed out of the model's text. NodeRuntime uses
+   * this to drive the avatar's emotion animation client-side without
+   * round-tripping through a gateway-emitted state event. The [String] text
+   * is the cleaned (marker-stripped) reply — handy for diagnostic logging.
+   */
+  private val onAssistantMarkers: (cleaned: String, markers: List<AvatarMarkerParser.Marker>) -> Unit = { _, _ -> },
+  /**
    * Transcribe the given WAV file via the gateway's `/stream/stt` proxy.
    * Returns the committed transcript, or null when the gateway can't reach
    * ElevenLabs / no STT plugin is configured — callers fall back to the
@@ -438,24 +446,39 @@ class MicCaptureManager(
     val state = payload["state"].asStringOrNull()
     when (state) {
       "delta" -> {
-        val deltaText = parseAssistantText(payload)
-        if (!deltaText.isNullOrBlank()) {
-          upsertPendingAssistant(text = deltaText.trim(), isStreaming = true)
+        val rawDelta = parseAssistantText(payload)
+        if (!rawDelta.isNullOrBlank()) {
+          // Strip `<<<state-N>>>` markers from the streamed text before it
+          // reaches the UI — keeps the bubble clean while the model types.
+          // We don't dispatch markers here because delta payloads are
+          // cumulative (each one replaces the previous); firing marker
+          // callbacks on every delta would re-dispatch the same emotion
+          // repeatedly. The "final" branch handles dispatch once.
+          val parsed = AvatarMarkerParser.parse(rawDelta)
+          upsertPendingAssistant(text = parsed.cleanedText.trim(), isStreaming = true)
         }
       }
       "final" -> {
-        val finalText = parseAssistantText(payload)?.trim().orEmpty()
+        val rawFinal = parseAssistantText(payload)?.trim().orEmpty()
+        val parsed = AvatarMarkerParser.parse(rawFinal)
+        val finalText = parsed.cleanedText
         PhoneDiagLog.incoming(
           "mic",
           "chat final chars=${finalText.length}" +
+            (if (parsed.markers.isNotEmpty()) " markers=${parsed.markers.size}" else "") +
             (if (!matchesPending) " (late/recent)" else "") +
             if (finalText.isNotEmpty()) " \"${finalText.take(40)}${if (finalText.length > 40) "…" else ""}\"" else "",
         )
         if (finalText.isNotEmpty()) {
           upsertPendingAssistant(text = finalText, isStreaming = false)
+          // Feed the CLEAN text to TTS so `<<<happy-1>>>` etc. never gets
+          // vocalised by ElevenLabs.
           playAssistantReplyAsync(finalText)
         } else if (pendingAssistantEntryId != null) {
           updateConversationEntry(pendingAssistantEntryId!!, text = null, isStreaming = false)
+        }
+        if (parsed.markers.isNotEmpty()) {
+          onAssistantMarkers(finalText, parsed.markers)
         }
         forgetRunId(eventRunId)
         if (matchesPending) completePendingTurn() else dropHeadQueuedMessage()

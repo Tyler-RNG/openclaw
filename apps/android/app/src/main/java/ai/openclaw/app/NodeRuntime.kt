@@ -421,6 +421,15 @@ class NodeRuntime(
 
   private val sttFetcher = TalkDataPlaneSttFetcher(json = json)
 
+  /**
+   * Session keys whose first user message has already carried the emotion-
+   * vocabulary prompt prefix. Prevents re-teaching the model on every turn
+   * — we pay the prefix token cost only once per conversation. Resets to
+   * empty on app restart (acceptable: one redundant teaching per restart).
+   */
+  private val primedAvatarSessionKeys: java.util.Set<String> =
+    java.util.concurrent.ConcurrentHashMap.newKeySet()
+
   init {
     DeviceNotificationListenerService.setNodeEventSink { event, payloadJson ->
       scope.launch {
@@ -483,10 +492,12 @@ class NodeRuntime(
           agentAvatarSource.setAgentState(activeAgentId, "thinking")
           PhoneDiagLog.info("avatar", "$activeAgentId ← thinking (phone mic)")
         }
+        val sessionKey = resolveMainSessionKey()
+        val outgoingMessage = maybePrependAvatarPrompt(sessionKey, activeAgentId, message)
         val params =
           buildJsonObject {
-            put("sessionKey", JsonPrimitive(resolveMainSessionKey()))
-            put("message", JsonPrimitive(message))
+            put("sessionKey", JsonPrimitive(sessionKey))
+            put("message", JsonPrimitive(outgoingMessage))
             put("thinking", JsonPrimitive(chatThinkingLevel.value))
             put("timeoutMs", JsonPrimitive(30_000))
             put("idempotencyKey", JsonPrimitive(idempotencyKey))
@@ -511,6 +522,25 @@ class NodeRuntime(
             agentAvatarSource.setAgentState(activeAgentId, defaultState)
             PhoneDiagLog.info("avatar", "$activeAgentId ← $defaultState (speak done)")
           }
+        }
+      },
+      onAssistantMarkers = { cleaned, markers ->
+        // Drive the dial avatar from the markers the model embedded in its
+        // reply — no gateway-side marker parser required. Dispatch states in
+        // the order they appear so rapid emotion shifts animate correctly
+        // for short replies (the last marker's state is the one that sticks
+        // after the reply finishes). `count` is forwarded for a future
+        // CharacterAvatar extension that honours N-playthrough semantics.
+        val activeAgentId = resolveActiveAgentId().takeIf { it.isNotEmpty() }
+        if (activeAgentId != null && markers.isNotEmpty()) {
+          for (marker in markers) {
+            agentAvatarSource.setAgentState(activeAgentId, marker.state)
+            PhoneDiagLog.info(
+              "avatar",
+              "$activeAgentId ← ${marker.state} (marker, count=${marker.count ?: "loop"})",
+            )
+          }
+          Log.d(TAG_WEAR, "avatar markers dispatched n=${markers.size} cleanChars=${cleaned.length}")
         }
       },
       transcribeViaGateway = { file ->
@@ -1740,6 +1770,41 @@ class NodeRuntime(
     micCapture.handleGatewayEvent(event, payloadJson)
     talkMode.handleGatewayEvent(event, payloadJson)
     chat.handleGatewayEvent(event, payloadJson)
+  }
+
+  /**
+   * Build + prepend the client-side "sprite-core mode" prompt prefix when
+   * [sessionKey] hasn't been primed yet this process. Returns [message]
+   * unchanged when the session was already primed, when we don't have
+   * per-agent emotion descriptions cached, or when the active agent is
+   * unknown. Runs synchronously on the caller's coroutine; the snapshot
+   * lookup is non-blocking because TalkSpeaker has already fetched and
+   * cached the `sprite-core.agents` RPC response earlier in the session.
+   */
+  private suspend fun maybePrependAvatarPrompt(
+    sessionKey: String,
+    agentId: String?,
+    message: String,
+  ): String {
+    if (agentId.isNullOrEmpty()) return message
+    if (!primedAvatarSessionKeys.add(sessionKey)) return message // already primed
+    val descriptions = try {
+      talkSpeaker.resolveEmotionDescriptions(agentId)
+    } catch (e: Throwable) {
+      PhoneDiagLog.warn("avatar", "prompt prefix lookup threw: ${e.javaClass.simpleName}")
+      null
+    }
+    val agentName = gatewayAgents.firstOrNull { it.id == agentId }?.name
+    val prefix = AvatarPromptBuilder.build(agentName = agentName, agentDescriptions = descriptions)
+    if (prefix == null) {
+      PhoneDiagLog.info("avatar", "prompt prefix skipped (no descriptions for $agentId)")
+      // Un-prime the session so a later descriptions fetch gets a chance
+      // to inject on the next turn.
+      primedAvatarSessionKeys.remove(sessionKey)
+      return message
+    }
+    PhoneDiagLog.outgoing("avatar", "prompt prefix injected sessionKey=${sessionKey.take(12)} agent=$agentId")
+    return AvatarPromptBuilder.prepend(prefix = prefix, userMessage = message)
   }
 
   /**

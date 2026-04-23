@@ -341,6 +341,20 @@ internal class TalkSpeaker(
         return snapshot.agents[agentId]?.voice
     }
 
+    /**
+     * Emotion-state names + human descriptions for an agent, pulled from the
+     * same `sprite-core.agents` snapshot TalkSpeaker already caches for
+     * voice resolution. Used by [AvatarPromptBuilder] to build the
+     * client-side "sprite-core mode" prompt prefix.
+     *
+     * Returns null when the plugin isn't registered, the agent isn't
+     * configured, or has no descriptions (no emotion teaching to inject).
+     */
+    internal suspend fun resolveEmotionDescriptions(agentId: String): Map<String, String>? {
+        val snapshot = ensureAgentsSnapshot() ?: return null
+        return snapshot.agents[agentId]?.descriptions?.takeIf { it.isNotEmpty() }
+    }
+
     private suspend fun ensureAgentsSnapshot(): SpriteCoreAgentsSnapshot? {
         val cached = cachedSnapshot
         if (cached != null) return cached
@@ -404,9 +418,36 @@ internal class TalkSpeaker(
             val obj = (raw as? JsonObject) ?: continue
             val voice = parseVoice(obj["voice"])
             val emotions = parseEmotions(obj["emotions"])
-            parsed[id] = SpriteCoreAgentEntry(voice = voice, emotions = emotions)
+            val descriptions = parseEmotionDescriptions(obj)
+            parsed[id] = SpriteCoreAgentEntry(
+                voice = voice,
+                emotions = emotions,
+                descriptions = descriptions,
+            )
         }
         return SpriteCoreAgentsSnapshot(agents = parsed)
+    }
+
+    /**
+     * Collects the per-state emotion descriptions exposed by the plugin's
+     * `sprite-core.agents` RPC. Two sources, merged with per-emotion entries
+     * winning over the legacy `prompting.descriptions` map so freshly-
+     * authored emotion entries can override a stale top-level description.
+     */
+    private fun parseEmotionDescriptions(agentObj: JsonObject): Map<String, String>? {
+        val merged = mutableMapOf<String, String>()
+        (agentObj["prompting"] as? JsonObject)?.get("descriptions")?.let { raw ->
+            (raw as? JsonObject)?.forEach { (state, v) ->
+                v.asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() }?.let { merged[state] = it }
+            }
+        }
+        (agentObj["emotions"] as? JsonObject)?.forEach { (state, raw) ->
+            val entry = raw as? JsonObject ?: return@forEach
+            entry["description"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                merged[state] = it
+            }
+        }
+        return merged.takeIf { it.isNotEmpty() }
     }
 
     private fun parseVoice(element: JsonElement?): TalkSpeakerAgentVoice? {
@@ -594,4 +635,5 @@ private data class SpriteCoreAgentsSnapshot(
 private data class SpriteCoreAgentEntry(
     val voice: TalkSpeakerAgentVoice?,
     val emotions: Map<String, SpriteCoreEmotionDirective>?,
+    val descriptions: Map<String, String>?,
 )

@@ -1311,6 +1311,11 @@ class NodeRuntime(
    */
   fun newSessionForAgent(agentId: String) {
     val id = agentId.trim().ifEmpty { return }
+    // Capture the OLD session key BEFORE rotating so we can nuke its
+    // transcript on the gateway — otherwise the desktop / chat tab / any
+    // other viewer still sees the old conversation even though the phone
+    // has moved on to a fresh key.
+    val oldSessionKey = resolveNodeMainSessionKey(id)
     val fresh = System.currentTimeMillis().toString(36)
     agentSessionOverrides[id] = fresh
     PhoneDiagLog.info("agent", "$id ← new session (suffix=$fresh)")
@@ -1326,6 +1331,25 @@ class NodeRuntime(
     // _mainSessionKey.value = "" first to guarantee the update fires.
     _mainSessionKey.value = ""
     syncMainSessionKey(id)
+    // Best-effort: delete the old session on the gateway so the desktop
+    // and chat tab no longer show the wiped history. Failure here doesn't
+    // affect the phone's new-session state — we already rotated to a
+    // fresh key, so the phone is unblocked regardless.
+    scope.launch {
+      try {
+        val params = buildJsonObject {
+          put("key", JsonPrimitive(oldSessionKey))
+          put("deleteTranscript", JsonPrimitive(true))
+        }
+        operatorSession.request("sessions.delete", params.toString())
+        PhoneDiagLog.info("agent", "sessions.delete ok key=${oldSessionKey.take(40)}")
+      } catch (e: Throwable) {
+        PhoneDiagLog.warn(
+          "agent",
+          "sessions.delete failed: ${e.javaClass.simpleName}: ${e.message?.take(60)}",
+        )
+      }
+    }
   }
 
   fun abortChat() {

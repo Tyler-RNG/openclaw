@@ -1,3 +1,6 @@
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -14,6 +17,12 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
+        // Rolling build stamp shown on the dial's trailing "build" page, so we
+        // can visually confirm the watch is running the current APK. Evaluated
+        // at Gradle configuration time — rerun `:app:installDebug` (no config
+        // cache) to refresh.
+        val buildStamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("MM-dd HH:mm"))
+        buildConfigField("String", "BUILD_STAMP", "\"$buildStamp\"")
     }
 
     buildTypes {
@@ -29,6 +38,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     compileOptions {

@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.sp
 import androidx.wear.compose.material.Text
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
+import ai.openclaw.wear.BuildConfig
 import ai.openclaw.wear.PhoneBridge
 import ai.openclaw.wear.VoiceState
 import ai.openclaw.wear.WearViewModel
@@ -124,7 +125,9 @@ fun AgentDialScreen(viewModel: WearViewModel) {
         return
     }
 
-    val pagerState = rememberPagerState(pageCount = { agents.size })
+    // One trailing page past the last agent hosts a rolling build stamp so we
+    // can confirm on-glass which APK the watch is actually running.
+    val pagerState = rememberPagerState(pageCount = { agents.size + 1 })
     val coroutineScope = rememberCoroutineScope()
     val focusRequester = remember { FocusRequester() }
     val unreadByAgent by viewModel.unreadByAgent.collectAsState()
@@ -170,7 +173,9 @@ fun AgentDialScreen(viewModel: WearViewModel) {
                 coroutineScope.launch {
                     val delta = event.verticalScrollPixels
                     val current = pagerState.currentPage
-                    if (delta > 0 && current < agents.size - 1) {
+                    // Last reachable page is the trailing build-stamp page, so
+                    // the upper bound is agents.size (not agents.size - 1).
+                    if (delta > 0 && current < agents.size) {
                         pagerState.animateScrollToPage(current + 1)
                     } else if (delta < 0 && current > 0) {
                         pagerState.animateScrollToPage(current - 1)
@@ -180,6 +185,10 @@ fun AgentDialScreen(viewModel: WearViewModel) {
             }
             .focusable(),
     ) { pageIndex ->
+        if (pageIndex >= agents.size) {
+            BuildStampPage()
+            return@HorizontalPager
+        }
         val agent = agents[pageIndex]
         val isCurrentPage = pagerState.currentPage == pageIndex
         val agentColor = parseThemeColor(agent.theme) ?: OmnitrixGreen
@@ -529,6 +538,44 @@ private fun AgentDialIndicatorOverlay(
                     maxLines = 1,
                 )
             }
+        }
+    }
+}
+
+/**
+ * Trailing "build" page shown after the last agent on the scroll wheel. Prints
+ * the Gradle-baked BUILD_STAMP so we can eyeball whether the watch is actually
+ * running a fresh APK without plugging in adb. Rolls every `:app:installDebug`.
+ */
+@Composable
+private fun BuildStampPage() {
+    Box(
+        modifier = Modifier.fillMaxSize().background(Color.Black),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = "build",
+                color = OmnitrixGreen.copy(alpha = 0.55f),
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+            )
+            Text(
+                text = BuildConfig.BUILD_STAMP,
+                color = OmnitrixGreen,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace,
+            )
+            Text(
+                text = "v${BuildConfig.VERSION_NAME}",
+                color = OmnitrixGreen.copy(alpha = 0.45f),
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+            )
         }
     }
 }

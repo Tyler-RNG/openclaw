@@ -74,23 +74,24 @@ fun CharacterAvatar(
     val ref by player.currentRef.collectAsState()
     val bitmap: Bitmap? = ref?.let { frameSource.frame(it) }
     if (bitmap == null) return
-    // Crop to the biggest top square at the pixel level. Compose's
-    // ContentScale.Crop + Alignment.TopCenter did not produce the intended
-    // effect on-watch, so we slice the bitmap itself: for W×H sources the
-    // result is a (min(W,H))² bitmap taken from y=0, horizontally centered.
-    // The resulting bitmap is square, so any ContentScale behaves the same.
-    val topSquare = remember(bitmap) { bitmap.topSquare() }
+    // Sprites are authored square with the character spanning the full frame,
+    // so the biggest top square is still the whole bitmap. Instead, split the
+    // frame in half and take the centered square of the top half — for a
+    // 256² source that yields a 128² slice at (64, 0), framing the head and
+    // shoulders like a headshot crop.
+    val headCrop = remember(bitmap) { bitmap.centeredTopHalfSquare() }
     Image(
-        bitmap = topSquare.asImageBitmap(),
+        bitmap = headCrop.asImageBitmap(),
         contentDescription = contentDescription,
         contentScale = ContentScale.Crop,
         modifier = modifier.fillMaxSize(),
     )
 }
 
-private fun Bitmap.topSquare(): Bitmap {
-    val side = minOf(width, height)
-    if (width == side && height == side) return this
+private fun Bitmap.centeredTopHalfSquare(): Bitmap {
+    val topHalfHeight = height / 2
+    val side = minOf(width, topHalfHeight)
+    if (side <= 0) return this
     val x = (width - side) / 2
     return Bitmap.createBitmap(this, x, 0, side, side)
 }

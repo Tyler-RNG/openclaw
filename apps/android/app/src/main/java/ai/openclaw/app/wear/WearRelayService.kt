@@ -7,6 +7,7 @@ import com.google.android.gms.wearable.WearableListenerService
 import ai.openclaw.app.NodeApp
 import ai.openclaw.app.NodeRuntime
 import ai.openclaw.app.avatar.AvatarMarkerParser
+import ai.openclaw.app.diag.PhoneDeepLog
 import ai.openclaw.app.protocol.WearAsset
 import com.google.android.gms.wearable.Asset
 import com.google.android.gms.wearable.PutDataMapRequest
@@ -31,6 +32,7 @@ class WearRelayService : WearableListenerService() {
     val data = String(event.data, Charsets.UTF_8)
     val short = shortNode(source)
     WearRelayLog.incoming(tagFor(path), "$short · ${data.length}B")
+    PhoneDeepLog.incoming(tagFor(path), "$path ${data.length}B from $short :: ${data.take(160)}")
 
     val app = application as? NodeApp
     if (app == null) {
@@ -292,9 +294,11 @@ class WearRelayService : WearableListenerService() {
         dataMap.putLong("ts", System.currentTimeMillis())
       }.asPutDataRequest().setUrgent()
       com.google.android.gms.wearable.Wearable.getDataClient(app).putDataItem(request).await()
+      PhoneDeepLog.outgoing("data", "putDataItem $path ${bytes.size}B mime=$mime")
       true
     } catch (e: Throwable) {
       WearRelayLog.warn("agents", "put $path: ${e.javaClass.simpleName}")
+      PhoneDeepLog.error("data", "putDataItem $path failed: ${e.javaClass.simpleName}")
       false
     }
   }
@@ -312,8 +316,10 @@ class WearRelayService : WearableListenerService() {
         dataMap.putLong("ts", System.currentTimeMillis())
       }.asPutDataRequest().setUrgent()
       com.google.android.gms.wearable.Wearable.getDataClient(app).putDataItem(request).await()
+      PhoneDeepLog.outgoing("state", "${WearAsset.avatarStatePath(agentId)} → $stateName")
     } catch (e: Throwable) {
       WearRelayLog.warn("chat", "state signal $agentId→$stateName: ${e.javaClass.simpleName}")
+      PhoneDeepLog.error("state", "$agentId→$stateName: ${e.javaClass.simpleName}")
     }
   }
 
@@ -327,9 +333,11 @@ class WearRelayService : WearableListenerService() {
         dataMap.putLong("ts", System.currentTimeMillis())
       }.asPutDataRequest().setUrgent()
       com.google.android.gms.wearable.Wearable.getDataClient(app).putDataItem(request).await()
+      PhoneDeepLog.outgoing("avatar", "${WearAsset.avatarDataPath(agentId)} ${bytes.size}B mime=$mime")
       true
     } catch (e: Throwable) {
       WearRelayLog.warn("agents", "asset put $agentId: ${e.javaClass.simpleName}")
+      PhoneDeepLog.error("avatar", "$agentId: ${e.javaClass.simpleName}")
       false
     }
   }
@@ -592,12 +600,18 @@ class WearRelayService : WearableListenerService() {
 
   private suspend fun reply(app: NodeApp, nodeId: String, path: String, data: String) {
     val payload = clampToDataLayerCap(path, data)
+    val clampedNote = if (payload.length != data.length) " (clamped from ${data.length}B)" else ""
     try {
       Wearable.getMessageClient(app).sendMessage(nodeId, path, payload.toByteArray(Charsets.UTF_8)).await()
       WearRelayLog.outgoing(tagFor(path), "${shortNode(nodeId)} · ${payload.length}B")
+      PhoneDeepLog.outgoing(
+        tagFor(path),
+        "$path ${payload.length}B → ${shortNode(nodeId)}$clampedNote :: ${payload.take(160)}",
+      )
     } catch (e: Throwable) {
       Log.e(TAG, "reply failed $path", e)
       WearRelayLog.error(tagFor(path), "send failed: ${e.message ?: "unknown"}")
+      PhoneDeepLog.error(tagFor(path), "$path send failed: ${e.message ?: "unknown"}")
     }
   }
 

@@ -72,6 +72,7 @@ import ai.openclaw.app.MainViewModel
 import ai.openclaw.app.normalizeLocalHourMinute
 import ai.openclaw.app.NotificationPackageFilterMode
 import ai.openclaw.app.node.DeviceNotificationListenerService
+import ai.openclaw.app.diag.PhoneDeepLog
 import ai.openclaw.app.diag.PhoneDiagLog
 import ai.openclaw.app.diag.PhoneDiagLogKind
 import ai.openclaw.app.wear.WearRelayLog
@@ -483,6 +484,7 @@ fun SettingsSheet(viewModel: MainViewModel) {
       // ── Watch Relay ──
       item { WatchRelayPanel() }
       item { PhoneDebugPanel() }
+      item { PhoneDeepPanel() }
       item { HorizontalDivider(color = mobileBorder) }
 
       // ── Node ──
@@ -1508,6 +1510,7 @@ private fun WatchRelayPanel() {
 private const val WATCH_RELAY_PREFS = "openclaw_ui"
 private const val WATCH_RELAY_PREFS_KEY = "show_watch_relay"
 private const val PHONE_DEBUG_PREFS_KEY = "show_phone_debug"
+private const val PHONE_DEEP_PREFS_KEY = "show_phone_deep"
 
 private fun ai.openclaw.app.wear.WearRelayLogEntry.asCopyableLine(): String {
   val kindTag = kind.name.padEnd(5)
@@ -1657,4 +1660,122 @@ private fun copyAndToast(context: android.content.Context, text: String, confirm
   val clipboard = context.getSystemService(ClipboardManager::class.java)
   clipboard?.setPrimaryClip(ClipData.newPlainText("OpenClaw watch relay", text))
   Toast.makeText(context, confirm, Toast.LENGTH_SHORT).show()
+}
+
+/**
+ * Verbose wire-trace panel for the phone. Mirrors [PhoneDebugPanel] in shape
+ * but reads from [PhoneDeepLog] — every DataClient putDataItem, every
+ * MessageClient sendMessage, every inbound MessageEvent is recorded with
+ * path, byte size, and a short payload preview. Use this to reconstruct
+ * mid-reply traffic the watch is actually seeing without reaching for
+ * `adb logcat`. Off by default; toggle per-device.
+ */
+@Composable
+private fun PhoneDeepPanel() {
+  val context = LocalContext.current
+  val prefs = remember {
+    context.getSharedPreferences(WATCH_RELAY_PREFS, Context.MODE_PRIVATE)
+  }
+  var showPanel by remember {
+    mutableStateOf(prefs.getBoolean(PHONE_DEEP_PREFS_KEY, false))
+  }
+  val entries by PhoneDeepLog.entries.collectAsState()
+
+  Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      Box(
+        modifier = Modifier
+          .size(8.dp)
+          .clip(CircleShape)
+          .background(
+            if (showPanel) mobileAccent.copy(alpha = 0.85f)
+            else mobileTextTertiary.copy(alpha = 0.25f),
+          ),
+      )
+      Text(
+        "PHONE DEEP",
+        style = mobileCaption1.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
+        color = if (showPanel) mobileTextSecondary else mobileTextTertiary,
+        modifier = Modifier.weight(1f),
+      )
+      Switch(
+        checked = showPanel,
+        onCheckedChange = {
+          showPanel = it
+          prefs.edit().putBoolean(PHONE_DEEP_PREFS_KEY, it).apply()
+        },
+      )
+    }
+
+    if (!showPanel) return@Column
+
+    if (entries.isNotEmpty()) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+      ) {
+        TextButton(onClick = {
+          val text = entries.joinToString("\n") { it.asCopyableLine() }
+          copyAndToast(context, text, "Copied ${entries.size} log lines")
+        }) {
+          Text("COPY ALL", style = mobileCaption1.copy(fontWeight = FontWeight.Bold), color = mobileAccent)
+        }
+        TextButton(onClick = { PhoneDeepLog.clear() }) {
+          Text("Clear", style = mobileCaption1, color = mobileTextTertiary)
+        }
+      }
+    }
+
+    val scrollState = rememberScrollState()
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .heightIn(min = 72.dp, max = 320.dp)
+        .background(mobileCodeBg, RoundedCornerShape(10.dp))
+        .border(1.dp, mobileCodeBorder, RoundedCornerShape(10.dp))
+        .padding(horizontal = 12.dp, vertical = 10.dp)
+        .verticalScroll(scrollState),
+      verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+      if (entries.isEmpty()) {
+        Text(
+          "Waiting for wire events…",
+          style = mobileCaption1.copy(fontFamily = FontFamily.Monospace),
+          color = mobileTextTertiary,
+        )
+      } else {
+        entries.forEach { entry ->
+          val color = when (entry.kind) {
+            PhoneDiagLogKind.Error -> mobileDanger
+            PhoneDiagLogKind.Warn -> mobileWarning
+            PhoneDiagLogKind.In -> mobileCodeAccent
+            PhoneDiagLogKind.Out -> mobileAccent
+            PhoneDiagLogKind.Info -> mobileCodeText
+          }
+          val arrow = when (entry.kind) {
+            PhoneDiagLogKind.In -> "←"
+            PhoneDiagLogKind.Out -> "→"
+            PhoneDiagLogKind.Error -> "!"
+            PhoneDiagLogKind.Warn -> "·"
+            PhoneDiagLogKind.Info -> "·"
+          }
+          val lineText = "${entry.timestamp} $arrow ${entry.tag.padEnd(6).take(6)} ${entry.message}"
+          Text(
+            text = lineText,
+            style = mobileCaption2.copy(fontFamily = FontFamily.Monospace),
+            color = color,
+            maxLines = 4,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+              .fillMaxWidth()
+              .clickable { copyAndToast(context, entry.asCopyableLine(), "Copied 1 log line") },
+          )
+        }
+      }
+    }
+  }
 }

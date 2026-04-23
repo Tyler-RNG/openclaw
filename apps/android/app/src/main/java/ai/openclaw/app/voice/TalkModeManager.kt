@@ -795,6 +795,9 @@ internal class TalkModeManager(
   private suspend fun speakWithSystemTts(text: String, directive: TalkDirective?, playbackToken: Long) {
     ensurePlaybackActive(playbackToken)
     val engine = ensureTextToSpeech()
+    // Strip XML/HTML markup so the Android TTS engine doesn't pronounce the
+    // literal characters ("less than sign", "ampersand L T …").
+    val cleanText = sanitizeTextForTts(text)
     val utteranceId = UUID.randomUUID().toString()
     val finished = CompletableDeferred<Unit>()
     withContext(Dispatchers.Main) {
@@ -852,7 +855,7 @@ internal class TalkModeManager(
           }
         },
       )
-      val result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+      val result = engine.speak(cleanText, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
       if (result != TextToSpeech.SUCCESS) {
         throw IllegalStateException("TextToSpeech start failed")
       }

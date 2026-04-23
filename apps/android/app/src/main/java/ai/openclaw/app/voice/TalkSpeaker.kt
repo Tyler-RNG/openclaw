@@ -87,7 +87,10 @@ internal class TalkSpeaker(
             null
         }
         val effectiveDirective = mergeWithEmotion(baseDirective, emotionDirective)
-        val synthText = applyAudioTag(text, emotionDirective)
+        // Strip XML/HTML markup the model sometimes leaves in reply text so the
+        // TTS engine doesn't pronounce "less than sign" etc. See TtsTextSanitizer.
+        val cleanText = sanitizeTextForTts(text)
+        val synthText = applyAudioTag(cleanText, emotionDirective)
 
         // Prefer the direct data-plane `/stream/tts` path when the agent has
         // an ElevenLabs voice configured in SpriteCore + the plugin exposes
@@ -239,7 +242,10 @@ internal class TalkSpeaker(
         val emotionDirective = emotion?.let { resolveEmotion(agentId, it) }
         val effectiveVoiceId = emotionDirective?.voiceId?.takeIf { it.isNotBlank() }
             ?: agentVoice?.voiceId
-        val synthText = applyAudioTag(text, emotionDirective)
+        // Same sanitize as synthesizeForPhone — watch relay ships the text
+        // to the same ElevenLabs / talk.speak endpoints, so the fix applies.
+        val cleanText = sanitizeTextForTts(text)
+        val synthText = applyAudioTag(cleanText, emotionDirective)
         val dataPlane = dataPlaneLookup()
         val token = authTokenLookup()
 

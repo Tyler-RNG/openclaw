@@ -23,6 +23,14 @@ class ChatController(
   private val session: GatewaySession,
   private val json: Json,
   private val supportsChatSubscribe: Boolean,
+  /**
+   * Optional hook called before each outgoing chat.send so NodeRuntime can
+   * prepend the client-built sprite-core mode prompt on the first message
+   * per session. Returns the message (possibly with a prefix) or the
+   * original text if no prefix is needed. Declared suspend because the
+   * lookup may touch cached RPC snapshots.
+   */
+  private val resolveOutgoingMessage: suspend (sessionKey: String, text: String) -> String = { _, text -> text },
 ) {
   private var appliedMainSessionKey = "main"
   private val _sessionKey = MutableStateFlow("main")
@@ -192,10 +200,15 @@ class ChatController(
     publishPendingToolCalls()
 
     return try {
+      val outgoing = try {
+        resolveOutgoingMessage(sessionKey, text)
+      } catch (_: Throwable) {
+        text
+      }
       val params =
         buildJsonObject {
           put("sessionKey", JsonPrimitive(sessionKey))
-          put("message", JsonPrimitive(text))
+          put("message", JsonPrimitive(outgoing))
           put("thinking", JsonPrimitive(thinking))
           put("timeoutMs", JsonPrimitive(30_000))
           put("idempotencyKey", JsonPrimitive(runId))
@@ -353,7 +366,12 @@ class ChatController(
         if (!isPending) return
         val text = parseAssistantDeltaText(payload)
         if (!text.isNullOrEmpty()) {
-          _streamingAssistantText.value = text
+          // Strip <<<state-N>>> markers from the streamed deltas so the
+          // chat bubble never flashes the raw vocabulary tokens to the user.
+          // Final history rendering lives elsewhere; this covers the
+          // streaming case.
+          val cleaned = ai.openclaw.spritecore.client.parseAvatarMarkers(text).cleanedText
+          _streamingAssistantText.value = cleaned
         }
       }
       "final", "aborted", "error" -> {

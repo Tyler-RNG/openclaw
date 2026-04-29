@@ -61,12 +61,20 @@ class TalkModeManagerTest {
         onDisconnected = {},
         onEvent = { _, _ -> },
       )
+    val talkSpeaker = TalkSpeaker(
+      rpcClient = TalkSpeakRpcClient(session = session),
+      dataPlaneFetcher = TalkDataPlaneTtsFetcher(assetUploader = null),
+      session = session,
+      dataPlaneLookup = { null },
+      authTokenLookup = { null },
+    )
     return TalkModeManager(
       context = app,
       scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
       session = session,
       supportsChatSubscribe = false,
       isConnected = { true },
+      talkSpeaker = talkSpeaker,
     )
   }
 

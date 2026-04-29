@@ -1,9 +1,5 @@
 package ai.openclaw.app.ui
 
-import ai.openclaw.app.MainViewModel
-import ai.openclaw.app.VoiceCaptureMode
-import ai.openclaw.app.voice.VoiceConversationEntry
-import ai.openclaw.app.voice.VoiceConversationRole
 import android.Manifest
 import android.app.Activity
 import android.content.Context
@@ -16,6 +12,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,17 +36,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.VolumeOff
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
-import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -62,7 +57,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -73,6 +70,9 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import ai.openclaw.app.MainViewModel
+import ai.openclaw.app.voice.VoiceConversationEntry
+import ai.openclaw.app.voice.VoiceConversationRole
 import kotlin.math.max
 
 @Composable
@@ -83,25 +83,21 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
   val listState = rememberLazyListState()
 
   val gatewayStatus by viewModel.statusText.collectAsState()
-  val voiceCaptureMode by viewModel.voiceCaptureMode.collectAsState()
   val micEnabled by viewModel.micEnabled.collectAsState()
   val micCooldown by viewModel.micCooldown.collectAsState()
-  val speakerEnabled by viewModel.speakerEnabled.collectAsState()
   val micStatusText by viewModel.micStatusText.collectAsState()
   val micLiveTranscript by viewModel.micLiveTranscript.collectAsState()
   val micQueuedMessages by viewModel.micQueuedMessages.collectAsState()
   val micConversation by viewModel.micConversation.collectAsState()
+  val activeAgentId by viewModel.activeAgentId.collectAsState()
   val micInputLevel by viewModel.micInputLevel.collectAsState()
   val micIsSending by viewModel.micIsSending.collectAsState()
-  val talkModeEnabled by viewModel.talkModeEnabled.collectAsState()
-  val talkModeListening by viewModel.talkModeListening.collectAsState()
-  val talkModeSpeaking by viewModel.talkModeSpeaking.collectAsState()
 
   val hasStreamingAssistant = micConversation.any { it.role == VoiceConversationRole.Assistant && it.isStreaming }
   val showThinkingBubble = micIsSending && !hasStreamingAssistant
 
   var hasMicPermission by remember { mutableStateOf(context.hasRecordAudioPermission()) }
-  var pendingVoicePermissionAction by remember { mutableStateOf<PendingVoicePermissionAction?>(null) }
+  var pendingMicEnable by remember { mutableStateOf(false) }
 
   DisposableEffect(lifecycleOwner, context) {
     val observer =
@@ -113,7 +109,7 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
     lifecycleOwner.lifecycle.addObserver(observer)
     onDispose {
       lifecycleOwner.lifecycle.removeObserver(observer)
-      // Manual mic is tied to the Voice tab; Talk Mode is explicit and can continue.
+      // Stop TTS when leaving the voice screen
       viewModel.setVoiceScreenActive(false)
     }
   }
@@ -121,14 +117,10 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
   val requestMicPermission =
     rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
       hasMicPermission = granted
-      if (granted) {
-        when (pendingVoicePermissionAction) {
-          PendingVoicePermissionAction.ManualMic -> viewModel.setMicEnabled(true)
-          PendingVoicePermissionAction.TalkMode -> viewModel.setTalkModeEnabled(true)
-          null -> Unit
-        }
-      }
-      pendingVoicePermissionAction = null
+      // In press-and-hold mode we don't auto-start capture after a permission
+      // grant — the user presses again. pendingMicEnable is retained for
+      // compatibility with any non-hold call sites.
+      pendingMicEnable = false
     }
 
   LaunchedEffect(micConversation.size, showThinkingBubble) {
@@ -171,12 +163,12 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
                 tint = mobileTextTertiary,
               )
               Text(
-                "Tap mic or Talk",
+                "Hold the mic to talk",
                 style = mobileHeadline,
                 color = mobileTextSecondary,
               )
               Text(
-                "Mic sends turns; Talk keeps the conversation open.",
+                "Release to send.",
                 style = mobileCallout,
                 color = mobileTextTertiary,
               )
@@ -217,36 +209,42 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
         }
       }
 
-      // Mic button with input-reactive ring + speaker toggle
+      // "New chat" pill — rotates the active agent's session key so the
+      // next user turn starts from an empty gateway history. Disabled when
+      // no agent is active (e.g., before pairing completes).
+      val resetTargetAgent = activeAgentId
+      if (resetTargetAgent != null) {
+        Row(
+          modifier = Modifier
+            .padding(bottom = 8.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .background(mobileAccentSoft)
+            .border(1.dp, mobileAccent.copy(alpha = 0.35f), RoundedCornerShape(999.dp))
+            .clickable { viewModel.newSessionForAgent(resetTargetAgent) }
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Icon(
+            imageVector = Icons.Default.Refresh,
+            contentDescription = "Start new chat",
+            modifier = Modifier.size(16.dp),
+            tint = mobileAccent,
+          )
+          Text(
+            text = "New chat",
+            style = mobileCaption2,
+            color = mobileAccent,
+          )
+        }
+      }
+
+      // Mic button with input-reactive ring.
       Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        // Speaker toggle
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-          IconButton(
-            onClick = { viewModel.setSpeakerEnabled(!speakerEnabled) },
-            modifier = Modifier.size(48.dp),
-            colors =
-              IconButtonDefaults.iconButtonColors(
-                containerColor = if (speakerEnabled) mobileSurface else mobileDangerSoft,
-              ),
-          ) {
-            Icon(
-              imageVector = if (speakerEnabled) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
-              contentDescription = if (speakerEnabled) "Mute speaker" else "Unmute speaker",
-              modifier = Modifier.size(22.dp),
-              tint = if (speakerEnabled) mobileTextSecondary else mobileDanger,
-            )
-          }
-          Text(
-            if (speakerEnabled) "Speaker" else "Muted",
-            style = mobileCaption2,
-            color = if (speakerEnabled) mobileTextTertiary else mobileDanger,
-          )
-        }
-
         // Ring size = 68dp base + up to 22dp driven by mic input level.
         // The outer Box is fixed at 90dp (max ring size) so the ring never shifts the button.
         Box(
@@ -263,80 +261,58 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
                   .background(mobileAccent.copy(alpha = 0.12f + 0.14f * ringLevel), CircleShape),
             )
           }
-          Button(
-            onClick = {
-              if (micCooldown) return@Button
-              if (micEnabled) {
-                viewModel.setMicEnabled(false)
-                return@Button
-              }
-              if (hasMicPermission) {
-                viewModel.setMicEnabled(true)
-              } else {
-                pendingVoicePermissionAction = PendingVoicePermissionAction.ManualMic
-                requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)
-              }
-            },
-            enabled = !micCooldown,
-            shape = CircleShape,
-            contentPadding = PaddingValues(0.dp),
-            modifier = Modifier.size(60.dp),
-            colors =
-              ButtonDefaults.buttonColors(
-                containerColor =
-                  if (micCooldown) {
-                    mobileTextSecondary
-                  } else if (micEnabled) {
-                    mobileDanger
-                  } else {
-                    mobileAccent
+          // Press-and-hold mic. Finger-down starts capture; finger-up commits
+          // the utterance. Release is dispatched by tryAwaitRelease (also when
+          // the user drags out of the button). micCooldown (the 2.5s drain
+          // after a release) blocks a new press until the previous turn fully
+          // stops, preventing double-send.
+          Box(
+            modifier = Modifier
+              .size(60.dp)
+              .background(
+                color = when {
+                  micCooldown -> mobileTextSecondary
+                  micEnabled -> mobileDanger
+                  else -> mobileAccent
+                },
+                shape = CircleShape,
+              )
+              .pointerInput(hasMicPermission, micCooldown) {
+                detectTapGestures(
+                  onPress = {
+                    if (micCooldown) return@detectTapGestures
+                    if (!hasMicPermission) {
+                      pendingMicEnable = true
+                      requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)
+                      return@detectTapGestures
+                    }
+                    viewModel.startHoldMic()
+                    try {
+                      tryAwaitRelease()
+                    } finally {
+                      viewModel.stopHoldMic()
+                    }
                   },
-                contentColor = Color.White,
-                disabledContainerColor = mobileTextSecondary,
-                disabledContentColor = Color.White.copy(alpha = 0.5f),
-              ),
+                )
+              },
+            contentAlignment = Alignment.Center,
           ) {
             Icon(
               imageVector = if (micEnabled) Icons.Default.MicOff else Icons.Default.Mic,
-              contentDescription = if (micEnabled) "Turn microphone off" else "Turn microphone on",
-              modifier = Modifier.size(24.dp),
+              contentDescription = if (micEnabled) "Recording — release to send" else "Hold to talk",
+              modifier = Modifier
+                .size(24.dp)
+                .alpha(if (micCooldown) 0.5f else 1f),
+              tint = Color.White,
             )
           }
         }
 
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-          IconButton(
-            onClick = {
-              if (talkModeEnabled) {
-                viewModel.setTalkModeEnabled(false)
-                return@IconButton
-              }
-              if (hasMicPermission) {
-                viewModel.setTalkModeEnabled(true)
-              } else {
-                pendingVoicePermissionAction = PendingVoicePermissionAction.TalkMode
-                requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)
-              }
-            },
-            modifier = Modifier.size(48.dp),
-            colors =
-              IconButtonDefaults.iconButtonColors(
-                containerColor = if (talkModeEnabled) mobileSuccessSoft else mobileSurface,
-              ),
-          ) {
-            Icon(
-              imageVector = Icons.Default.RecordVoiceOver,
-              contentDescription = if (talkModeEnabled) "Turn Talk Mode off" else "Turn Talk Mode on",
-              modifier = Modifier.size(22.dp),
-              tint = if (talkModeEnabled) mobileSuccess else mobileTextSecondary,
-            )
-          }
+        // Invisible spacer to balance the row (matches speaker column width)
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+          Box(modifier = Modifier.size(48.dp))
           Spacer(modifier = Modifier.height(4.dp))
-          Text(
-            if (talkModeEnabled) "Talk on" else "Talk",
-            style = mobileCaption2,
-            color = if (talkModeEnabled) mobileSuccess else mobileTextTertiary,
-          )
+          Text("", style = mobileCaption2)
         }
       }
 
@@ -344,9 +320,6 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
       val queueCount = micQueuedMessages.size
       val stateText =
         when {
-          voiceCaptureMode == VoiceCaptureMode.TalkMode && talkModeSpeaking -> "Talk speaking"
-          voiceCaptureMode == VoiceCaptureMode.TalkMode && talkModeListening -> "Talk listening"
-          voiceCaptureMode == VoiceCaptureMode.TalkMode -> "Talk on"
           queueCount > 0 -> "$queueCount queued"
           micIsSending -> "Sending"
           micCooldown -> "Cooldown"
@@ -355,15 +328,14 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
         }
       val stateColor =
         when {
-          voiceCaptureMode == VoiceCaptureMode.TalkMode -> mobileSuccess
           micEnabled -> mobileSuccess
           micIsSending -> mobileAccent
           else -> mobileTextSecondary
         }
       Surface(
         shape = RoundedCornerShape(999.dp),
-        color = if (micEnabled || talkModeEnabled) mobileSuccessSoft else mobileSurface,
-        border = BorderStroke(1.dp, if (micEnabled || talkModeEnabled) mobileSuccess.copy(alpha = 0.3f) else mobileBorder),
+        color = if (micEnabled) mobileSuccessSoft else mobileSurface,
+        border = BorderStroke(1.dp, if (micEnabled) mobileSuccess.copy(alpha = 0.3f) else mobileBorder),
       ) {
         Text(
           "$gatewayStatus · $stateText",
@@ -400,11 +372,6 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
       }
     }
   }
-}
-
-private enum class PendingVoicePermissionAction {
-  ManualMic,
-  TalkMode,
 }
 
 @Composable
@@ -470,10 +437,7 @@ private fun ThinkingDots(color: Color) {
 }
 
 @Composable
-private fun ThinkingDot(
-  alpha: Float,
-  color: Color,
-) {
+private fun ThinkingDot(alpha: Float, color: Color) {
   Surface(
     modifier = Modifier.size(6.dp).alpha(alpha),
     shape = CircleShape,
@@ -481,11 +445,12 @@ private fun ThinkingDot(
   ) {}
 }
 
-private fun Context.hasRecordAudioPermission(): Boolean =
-  (
+private fun Context.hasRecordAudioPermission(): Boolean {
+  return (
     ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
       PackageManager.PERMISSION_GRANTED
-  )
+    )
+}
 
 private fun Context.findActivity(): Activity? =
   when (this) {

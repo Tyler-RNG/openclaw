@@ -172,6 +172,12 @@ ktlint {
 }
 
 dependencies {
+  // SpriteCore Kotlin SDK — wire types, animation graph, sprite player, marker
+  // parser, AgentAvatarSource cache. Pure-JVM core + Android variant for
+  // BitmapFrameSource. Hosted on GitHub Packages; see settings.gradle.kts.
+  implementation("ai.openclaw.spritecore:sprite-core-client:0.5.1")
+  implementation("ai.openclaw.spritecore:sprite-core-client-android:0.5.1")
+
   val composeBom = platform(libs.androidx.compose.bom)
   implementation(composeBom)
   androidTestImplementation(composeBom)
@@ -215,6 +221,10 @@ dependencies {
 
   // Unicast DNS-SD (Wide-Area Bonjour) for tailnet discovery domains.
   implementation(libs.dnsjava)
+
+  // Wearable Data Layer for watch relay.
+  implementation("com.google.android.gms:play-services-wearable:19.0.0")
+  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
 
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)

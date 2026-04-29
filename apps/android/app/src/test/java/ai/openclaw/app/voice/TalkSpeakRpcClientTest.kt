@@ -7,7 +7,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class TalkSpeakClientTest {
+class TalkSpeakRpcClientTest {
   @Test
   fun buildsRequestFromDirective() {
     val request =
@@ -52,7 +52,7 @@ class TalkSpeakClientTest {
   fun fallsBackOnlyForUnavailableReasons() =
     runTest {
       val client =
-        TalkSpeakClient(
+        TalkSpeakRpcClient(
           requestDetailed = { _, _, _ ->
             GatewaySession.RpcResult(
               ok = false,
@@ -81,7 +81,7 @@ class TalkSpeakClientTest {
   fun doesNotFallBackForSynthesisFailure() =
     runTest {
       val client =
-        TalkSpeakClient(
+        TalkSpeakRpcClient(
           requestDetailed = { _, _, _ ->
             GatewaySession.RpcResult(
               ok = false,
@@ -110,7 +110,7 @@ class TalkSpeakClientTest {
   fun fallsBackWhenGatewayOmitsReason() =
     runTest {
       val client =
-        TalkSpeakClient(
+        TalkSpeakRpcClient(
           requestDetailed = { _, _, _ ->
             GatewaySession.RpcResult(
               ok = false,

@@ -2,9 +2,9 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
 plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.plugin.compose")
-    id("org.jetbrains.kotlin.plugin.serialization")
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -61,41 +61,43 @@ kotlin {
 
 dependencies {
     // SpriteCore Kotlin SDK — wire types, animation graph, sprite player, marker
-    // parser. Pure-JVM core + Android variant for BitmapFrameSource. Hosted on
-    // GitHub Packages; see settings.gradle.kts.
-    implementation("ai.openclaw.spritecore:sprite-core-client:0.5.1")
-    implementation("ai.openclaw.spritecore:sprite-core-client-android:0.5.1")
+    // parser. Pure-JVM core + Android variant for BitmapFrameSource + Compose
+    // wrapper that ships the avatar Composable. Hosted on GitHub Packages;
+    // see settings.gradle.kts.
+    implementation("ai.openclaw.spritecore:sprite-core-client:0.5.8")
+    implementation("ai.openclaw.spritecore:sprite-core-client-android:0.5.8")
+    implementation("ai.openclaw.spritecore:sprite-core-client-compose:0.5.8")
 
-    val composeBom = platform("androidx.compose:compose-bom:2026.02.00")
+    val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)
 
-    implementation("androidx.core:core-ktx:1.17.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
-    implementation("androidx.activity:activity-compose:1.12.2")
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.activity.compose)
 
     // Compose UI
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.animation:animation")
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    implementation(libs.androidx.compose.animation)
 
     // Wear OS Compose
-    implementation("androidx.wear.compose:compose-material:1.4.1")
-    implementation("androidx.wear.compose:compose-foundation:1.4.1")
-    implementation("androidx.wear.compose:compose-navigation:1.4.1")
-    implementation("androidx.wear:wear:1.3.0")
+    implementation(libs.androidx.wear.compose.material)
+    implementation(libs.androidx.wear.compose.foundation)
+    implementation(libs.androidx.wear.compose.navigation)
+    implementation(libs.androidx.wear)
 
     // Wearable Data Layer (phone bridge)
-    implementation("com.google.android.gms:play-services-wearable:19.0.0")
+    implementation(libs.play.services.wearable)
 
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.10.0")
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.coroutines.play.services)
+    implementation(libs.kotlinx.serialization.json)
 
     // Coil for loading static agent avatar images (PNG/WebP/JPG). Animated
     // GIFs are intentionally not supported — agents that need motion must
     // use the sprites or atlas format, rendered through the SpriteCore SDK.
-    implementation("io.coil-kt.coil3:coil-compose:3.2.0")
-    implementation("io.coil-kt.coil3:coil-network-okhttp:3.2.0")
+    implementation(libs.coil.compose)
+    implementation(libs.coil.network.okhttp)
 
-    debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation(libs.androidx.compose.ui.tooling)
 }

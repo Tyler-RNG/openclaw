@@ -258,15 +258,15 @@ internal class TalkSpeaker(
         if (canFetchDirect) {
             WearRelayLog.info(
                 "chat",
-                "data-plane tts: $agentId voice=${effectiveVoiceId!!.take(8)}" +
+                "data-plane tts: $agentId voice=${effectiveVoiceId.take(8)}" +
                     (emotion?.let { " emotion=$it" } ?: "") +
                     (emotionDirective?.audioTag?.let { " tag=$it" } ?: ""),
             )
             val direct = dataPlaneFetcher.fetch(
-                baseUrl = dataPlane!!.baseUrl,
+                baseUrl = dataPlane.baseUrl,
                 voiceId = effectiveVoiceId,
                 text = synthText,
-                token = token!!,
+                token = token,
                 emotionOverride = emotionDirective?.toWireOverride(),
             )
             if (direct != null) return direct
@@ -396,7 +396,7 @@ internal class TalkSpeaker(
                 PhoneDiagLog.warn("talk", msg)
                 return null
             }
-            val snapshot = parseAgentsSnapshot(result.payloadJson!!)
+            val snapshot = parseAgentsSnapshot(result.payloadJson)
             if (snapshot != null) {
                 PhoneDiagLog.incoming(
                     "talk",
@@ -521,7 +521,7 @@ internal class TalkSpeaker(
                 WearRelayLog.warn("chat", "talk.speak: ${result.error?.message?.take(40) ?: "no payload"}")
                 return null
             }
-            val payload = json.parseToJsonElement(result.payloadJson!!)
+            val payload = json.parseToJsonElement(result.payloadJson)
             val obj = (payload as? JsonObject) ?: return null
             val audioUrl = (obj["audioUrl"]?.asStringOrNull() ?: obj["streamUrl"]?.asStringOrNull())
                 ?.takeIf { it.isNotBlank() }

@@ -110,6 +110,7 @@ class NodeRuntime(
   private val externalAudioCaptureActive = MutableStateFlow(false)
   private val _voiceCaptureMode = MutableStateFlow(VoiceCaptureMode.Off)
   val voiceCaptureMode: StateFlow<VoiceCaptureMode> = _voiceCaptureMode.asStateFlow()
+  val speakerEnabled: StateFlow<Boolean> = prefs.speakerEnabled
 
   private val discovery = GatewayDiscovery(appContext, scope = scope)
   val gateways: StateFlow<List<GatewayEndpoint>> = discovery.gateways
@@ -1110,6 +1111,14 @@ class NodeRuntime(
     setVoiceCaptureMode(if (value) VoiceCaptureMode.TalkMode else VoiceCaptureMode.Off)
   }
 
+  fun setSpeakerEnabled(value: Boolean) {
+    prefs.setSpeakerEnabled(value)
+    if (voiceReplySpeakerLazy.isInitialized()) {
+      voiceReplySpeaker.setPlaybackEnabled(value)
+    }
+    talkMode.setPlaybackEnabled(value)
+  }
+
   private suspend fun handleTalkPttStart(): GatewaySession.InvokeResult =
     runPreparedTalkPttCommand {
       val payload = talkMode.beginPushToTalk()
@@ -1186,7 +1195,7 @@ class NodeRuntime(
 
   /** Press-and-hold: start capture on finger-down. */
   fun startHoldMic() {
-    prefs.setTalkEnabled(true)
+    prefs.setVoiceMicEnabled(true)
     stopVoicePlayback()
     talkMode.ttsOnAllResponses = false
     scope.launch { talkMode.ensureChatSubscribed() }
@@ -1196,7 +1205,7 @@ class NodeRuntime(
 
   /** Press-and-hold: commit the utterance and stop on finger-up. */
   fun stopHoldMic() {
-    prefs.setTalkEnabled(false)
+    prefs.setVoiceMicEnabled(false)
     micCapture.stopHold()
     externalAudioCaptureActive.value = false
   }

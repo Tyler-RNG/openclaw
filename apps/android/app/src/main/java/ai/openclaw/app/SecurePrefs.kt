@@ -38,6 +38,8 @@ class SecurePrefs(
       "notifications.forwarding.maxEventsPerMinute"
     private const val notificationsForwardingSessionKeyKey = "notifications.forwarding.sessionKey"
     private const val voiceMicEnabledKey = "voice.micEnabled"
+    private const val speakerEnabledKey = "voice.speakerEnabled"
+    private const val defaultSpeakerEnabled = true
   }
 
   private val appContext = context.applicationContext
@@ -166,6 +168,10 @@ class SecurePrefs(
 
   private val _voiceMicEnabled = MutableStateFlow(plainPrefs.getBoolean(voiceMicEnabledKey, false))
   val voiceMicEnabled: StateFlow<Boolean> = _voiceMicEnabled
+
+  private val _speakerEnabled =
+    MutableStateFlow(plainPrefs.getBoolean(speakerEnabledKey, defaultSpeakerEnabled))
+  val speakerEnabled: StateFlow<Boolean> = _speakerEnabled
 
   fun setLastDiscoveredStableId(value: String) {
     val trimmed = value.trim()
@@ -486,6 +492,11 @@ class SecurePrefs(
   fun setVoiceMicEnabled(value: Boolean) {
     plainPrefs.edit { putBoolean(voiceMicEnabledKey, value) }
     _voiceMicEnabled.value = value
+  }
+
+  fun setSpeakerEnabled(value: Boolean) {
+    plainPrefs.edit { putBoolean(speakerEnabledKey, value) }
+    _speakerEnabled.value = value
   }
 
   private fun loadNotificationForwardingPackages(): Set<String> {

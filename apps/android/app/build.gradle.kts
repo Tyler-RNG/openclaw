@@ -174,9 +174,11 @@ ktlint {
 dependencies {
   // SpriteCore Kotlin SDK — wire types, animation graph, sprite player, marker
   // parser, AgentAvatarSource cache. Pure-JVM core + Android variant for
-  // BitmapFrameSource. Hosted on GitHub Packages; see settings.gradle.kts.
-  implementation("ai.openclaw.spritecore:sprite-core-client:0.5.1")
-  implementation("ai.openclaw.spritecore:sprite-core-client-android:0.5.1")
+  // BitmapFrameSource + Compose wrapper that ships the avatar Composable.
+  // Hosted on GitHub Packages; see settings.gradle.kts.
+  implementation("ai.openclaw.spritecore:sprite-core-client:0.5.8")
+  implementation("ai.openclaw.spritecore:sprite-core-client-android:0.5.8")
+  implementation("ai.openclaw.spritecore:sprite-core-client-compose:0.5.8")
 
   val composeBom = platform(libs.androidx.compose.bom)
   implementation(composeBom)

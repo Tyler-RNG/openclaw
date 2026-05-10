@@ -13,6 +13,7 @@ import ai.openclaw.app.ui.mobileCardSurface
 import ai.openclaw.app.ui.mobileDanger
 import ai.openclaw.app.ui.mobileDangerSoft
 import ai.openclaw.app.ui.mobileText
+import ai.openclaw.app.ui.mobileTextSecondary
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke

@@ -11,6 +11,7 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        mavenLocal()
         maven {
             name = "spriteCoreGitHubPackages"
             url = uri("https://maven.pkg.github.com/Tyler-RNG/sprite-core")
@@ -24,5 +25,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "OpenClawWear"
-include(":app")
+rootProject.name = "OpenClawWearable"
+include(":watch")
+include(":glasses")

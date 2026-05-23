@@ -64,9 +64,9 @@ dependencies {
     // parser. Pure-JVM core + Android variant for BitmapFrameSource + Compose
     // wrapper that ships the avatar Composable. Hosted on GitHub Packages;
     // see settings.gradle.kts.
-    implementation("ai.openclaw.spritecore:sprite-core-client:0.5.8")
-    implementation("ai.openclaw.spritecore:sprite-core-client-android:0.5.8")
-    implementation("ai.openclaw.spritecore:sprite-core-client-compose:0.5.8")
+    implementation("ai.openclaw.spritecore:sprite-core-client:0.5.10")
+    implementation("ai.openclaw.spritecore:sprite-core-client-android:0.5.10")
+    implementation("ai.openclaw.spritecore:sprite-core-client-compose:0.5.10")
 
     val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)

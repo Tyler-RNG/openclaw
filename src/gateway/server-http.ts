@@ -785,8 +785,18 @@ export function createGatewayHttpServer(opts: {
               trustedProxies,
               allowRealIpFallback,
               rateLimiter,
-              resolveAvatar: (agentId) =>
-                resolveAgentAvatar(configSnapshot, agentId, { includeUiOverride: true }),
+              resolveAvatar: (agentId) => {
+                const resolved = resolveAgentAvatar(configSnapshot, agentId, {
+                  includeUiOverride: true,
+                });
+                // Control UI's avatar route renders a single image. Multi-state
+                // avatars don't have a single renderable URL here; the client
+                // consumes them via agents.list → avatarStates instead.
+                if (resolved.kind === "states") {
+                  return { kind: "none", reason: "states-avatar-not-renderable-here" };
+                }
+                return resolved;
+              },
             });
           },
         });

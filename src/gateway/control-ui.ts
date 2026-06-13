@@ -9,7 +9,11 @@ import {
   asDateTimestampMs,
   resolveTimestampMsToIsoString,
 } from "@openclaw/normalization-core/number-coercion";
-import { resolveAgentAvatar, resolvePublicAgentAvatarSource } from "../agents/identity-avatar.js";
+import {
+  resolveAgentAvatar,
+  resolvePublicAgentAvatarSource,
+  type AgentAvatarResolution,
+} from "../agents/identity-avatar.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { matchRootFileOpenFailure, openRootFileSync } from "../infra/boundary-file-read.js";
 import {
@@ -166,6 +170,18 @@ type ControlUiAvatarMeta = {
   avatarStatus: ControlUiAvatarResolution["kind"];
   avatarReason: string | null;
 };
+
+// Control UI's avatar route renders a single image. Multi-state ("states")
+// avatars have no single renderable URL here; clients consume them via
+// agents.list → avatarStates instead, so they degrade to a non-renderable none.
+function toControlUiAvatarResolution(
+  resolved: AgentAvatarResolution,
+): ControlUiAvatarResolution {
+  if (resolved.kind === "states") {
+    return { kind: "none", reason: "states-avatar-not-renderable-here" };
+  }
+  return resolved;
+}
 
 function controlUiAvatarResolutionMeta(resolved: ControlUiAvatarResolution | null): {
   avatarSource: string | null;
@@ -951,7 +967,9 @@ export async function handleControlUiHttpRequest(
     });
     const avatarMeta = config
       ? controlUiAvatarResolutionMeta(
-          resolveAgentAvatar(config, identity.agentId, { includeUiOverride: true }),
+          toControlUiAvatarResolution(
+            resolveAgentAvatar(config, identity.agentId, { includeUiOverride: true }),
+          ),
         )
       : controlUiAvatarResolutionMeta(null);
     if (req.method === "HEAD") {

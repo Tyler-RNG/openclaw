@@ -271,6 +271,13 @@ export type AgentEventHandlerOptions = {
     clientRunId: string;
     sessionKey: string;
   }) => void;
+  /**
+   * Optional avatar-marker broadcast hook. When supplied, assistant-event text
+   * is rewritten to strip `[avatar:<state>]` markers (if the speaking agent is
+   * states-configured) and an `avatar.state.change` event is broadcast for each
+   * new marker observed.
+   */
+  avatarMarkerBroadcast?: import("./avatar-marker-broadcast.js").AvatarMarkerBroadcast;
 };
 
 function roundedChatSendTimingMs(value: number): number {
@@ -292,6 +299,7 @@ export function createAgentEventHandler({
   lifecycleErrorRetryGraceMs = AGENT_LIFECYCLE_ERROR_RETRY_GRACE_MS,
   isChatSendRunActive = () => false,
   clearTrackedActiveRun,
+  avatarMarkerBroadcast,
 }: AgentEventHandlerOptions) {
   type TerminalLifecycleOptions = { skipChatErrorFinal?: boolean };
   type PendingTerminalLifecycleError = {
@@ -574,6 +582,7 @@ export function createAgentEventHandler({
     toolEventRecipients.markFinal(evt.runId);
     clearBufferedChatState(clientRunId);
     clearAgentRunContext(evt.runId);
+    avatarMarkerBroadcast?.clearRun(evt.runId);
     agentRunSeq.delete(evt.runId);
     agentRunSeq.delete(clientRunId);
 
@@ -1033,7 +1042,30 @@ export function createAgentEventHandler({
       chatLink?.sessionKey ?? eventSessionKey ?? resolveSessionKeyForRun(evt.runId);
     const clientRunId = chatLink?.clientRunId ?? evt.runId;
     const eventRunId = chatLink?.clientRunId ?? evt.runId;
-    const eventForClients = chatLink ? { ...evt, runId: eventRunId } : evt;
+
+    // Avatar-marker splice: strip [avatar:<state>] from assistant text and
+    // surface the state changes as avatar.state.change events. No-op unless the
+    // speaking agent is configured with a multi-state avatar.
+    let processedEvt = evt;
+    if (avatarMarkerBroadcast) {
+      const result = avatarMarkerBroadcast.process(evt, { sessionKey });
+      if (result.event) {
+        processedEvt = result.event;
+      }
+      for (const ev of result.events) {
+        broadcast("avatar.state.change", {
+          runId: chatLink?.clientRunId ?? ev.runId,
+          sessionKey: ev.sessionKey,
+          agentId: ev.agentId,
+          state: ev.state,
+          file: ev.file,
+          ts: Date.now(),
+        });
+      }
+    }
+    const eventForClients = chatLink
+      ? { ...processedEvt, runId: eventRunId }
+      : processedEvt;
     const isAborted =
       chatRunState.abortedRuns.has(clientRunId) || chatRunState.abortedRuns.has(evt.runId);
     // Include sessionKey so Control UI can filter tool streams per session.

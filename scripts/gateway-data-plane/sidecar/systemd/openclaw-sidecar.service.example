@@ -1,0 +1,27 @@
+[Unit]
+Description=OpenClaw Data Plane Sidecar (HTTP Asset Server + TTS)
+After=network.target tailscaled.service
+
+[Service]
+Type=simple
+User=<your-unix-user>
+WorkingDirectory=/home/<your-unix-user>/.openclaw/sidecar
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+
+# ElevenLabs key. Simplest: inline — the key is visible to anyone who can
+# run `systemctl cat openclaw-sidecar`. Fine for a single-user host.
+Environment=ELEVENLABS_API_KEY=<your-elevenlabs-api-key>
+
+# Safer alternative — comment the Environment= line above and uncomment
+# this one. Put the key in /etc/openclaw/sidecar.env (root-owned, mode
+# 0640). It won't show up in `systemctl cat`.
+#EnvironmentFile=/etc/openclaw/sidecar.env
+
+[Install]
+WantedBy=multi-user.target
+
+# Apply changes after editing:
+#   sudo systemctl daemon-reload
+#   sudo systemctl restart openclaw-sidecar

@@ -380,10 +380,45 @@ export type WebConfig = {
 // Provider docking: allowlists keyed by provider id (and internal "webchat").
 export type AgentElevatedAllowFromConfig = Partial<Record<string, Array<string | number>>>;
 
+export type AgentAvatarStateEntry = {
+  /**
+   * File reference for this state. Free-form string: a workspace-relative path,
+   * an HTTP(S) URL, or any other identifier the client knows how to resolve.
+   * The gateway does not validate or resolve this value on its own.
+   */
+  file: string;
+  /** Short description of when the state applies; used to build the AI instruction. */
+  description?: string;
+};
+
+/**
+ * Multi-state avatar config: a set of named states (happy, sad, angry, …) that
+ * the model can switch between mid-reply with an inline marker. Clients that
+ * understand this config read `agents.list → identity.avatarStates` to learn
+ * the state list + rendering targets and to inject the instruction text on new
+ * sessions; clients that don't simply fall back to the default avatar.
+ */
+export type AgentAvatarStatesConfig = {
+  kind: "states";
+  /** Name of the default state (must exist in `states`). */
+  default: string;
+  /** Map from state name → file + description. */
+  states: Record<string, AgentAvatarStateEntry>;
+  /**
+   * Optional explicit instruction text. When set, replaces the auto-generated
+   * instruction built from the state descriptions.
+   */
+  instruction?: string;
+};
+
 export type IdentityConfig = {
   name?: string;
   theme?: string;
   emoji?: string;
-  /** Avatar image: workspace-relative path, http(s) URL, or data URI. */
-  avatar?: string;
+  /**
+   * Avatar: either a string (workspace-relative path, http(s) URL, data URI,
+   * or short text / emoji) or an `AgentAvatarStatesConfig` for multi-state
+   * expression-driven avatars.
+   */
+  avatar?: string | AgentAvatarStatesConfig;
 };

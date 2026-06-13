@@ -599,12 +599,28 @@ export const DmConfigSchema = z
   })
   .strict();
 
+const AvatarStateEntrySchema = z
+  .object({
+    file: z.string(),
+    description: z.string().optional(),
+  })
+  .strict();
+
+const AvatarStatesConfigSchema = z
+  .object({
+    kind: z.literal("states"),
+    default: z.string(),
+    states: z.record(z.string(), AvatarStateEntrySchema),
+    instruction: z.string().optional(),
+  })
+  .strict();
+
 export const IdentitySchema = z
   .object({
     name: z.string().optional(),
     theme: z.string().optional(),
     emoji: z.string().optional(),
-    avatar: z.string().optional(),
+    avatar: z.union([z.string(), AvatarStatesConfigSchema]).optional(),
   })
   .strict()
   .optional();

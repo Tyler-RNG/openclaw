@@ -3,7 +3,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 
 /** Normalizes optional assistant identity fields and truncates them to the caller's limit. */
 export function coerceIdentityValue(
-  value: string | undefined,
+  value: unknown,
   maxLength: number,
 ): string | undefined {
   const trimmed = normalizeOptionalString(value);

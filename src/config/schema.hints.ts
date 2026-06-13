@@ -91,6 +91,10 @@ const FIELD_PLACEHOLDERS: Record<string, string> = {
   "gateway.push.apns.relay.baseUrl": "https://ios-push-relay.openclaw.ai",
   "channels.mattermost.baseUrl": "https://chat.example.com",
   "agents.list[].identity.avatar": "avatars/openclaw.png",
+  "agents.list[].identity.avatar.kind": "states",
+  "agents.list[].identity.avatar.default": "neutral",
+  "agents.list[].identity.avatar.states.*.file": "avatars/openclaw/happy.gif",
+  "agents.list[].identity.avatar.states.*.description": "warm, supportive",
 };
 
 const CHANNEL_NAMESPACE_PREFIX = "channels.";

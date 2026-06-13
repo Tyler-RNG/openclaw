@@ -36,34 +36,47 @@ export function startGatewayEventSubscriptions(params: {
     agentEventHandlerPromise ??= Promise.all([
       import("./server-chat.js"),
       import("./server-session-key.js"),
-    ]).then(([{ createAgentEventHandler }, { resolveSessionKeyForRun }]) =>
-      createAgentEventHandler({
-        broadcast: params.broadcast,
-        broadcastToConnIds: params.broadcastToConnIds,
-        nodeSendToSession: params.nodeSendToSession,
-        agentRunSeq: params.agentRunSeq,
-        chatRunState: params.chatRunState,
-        resolveSessionKeyForRun,
-        clearAgentRunContext,
-        toolEventRecipients: params.toolEventRecipients,
-        sessionEventSubscribers: params.sessionEventSubscribers,
-        sessionMessageSubscribers: params.sessionMessageSubscribers,
-        clearTrackedActiveRun: ({ runId, clientRunId }) => {
-          const candidateRunIds = runId === clientRunId ? [runId] : [runId, clientRunId];
-          for (const candidateRunId of candidateRunIds) {
-            const entry = params.chatAbortControllers.get(candidateRunId);
-            // Chat abort entries can hold the requested key while chat run
-            // state holds the canonical key; the run ids are the scoped match.
-            if (entry) {
-              entry.projectSessionActive = false;
+      import("./avatar-marker-broadcast.js"),
+      import("../config/config.js"),
+    ]).then(
+      ([
+        { createAgentEventHandler },
+        { resolveSessionKeyForRun },
+        { createAvatarMarkerBroadcast },
+        { loadConfig },
+      ]) =>
+        createAgentEventHandler({
+          broadcast: params.broadcast,
+          broadcastToConnIds: params.broadcastToConnIds,
+          nodeSendToSession: params.nodeSendToSession,
+          agentRunSeq: params.agentRunSeq,
+          chatRunState: params.chatRunState,
+          resolveSessionKeyForRun,
+          clearAgentRunContext,
+          toolEventRecipients: params.toolEventRecipients,
+          sessionEventSubscribers: params.sessionEventSubscribers,
+          sessionMessageSubscribers: params.sessionMessageSubscribers,
+          clearTrackedActiveRun: ({ runId, clientRunId }) => {
+            const candidateRunIds = runId === clientRunId ? [runId] : [runId, clientRunId];
+            for (const candidateRunId of candidateRunIds) {
+              const entry = params.chatAbortControllers.get(candidateRunId);
+              // Chat abort entries can hold the requested key while chat run
+              // state holds the canonical key; the run ids are the scoped match.
+              if (entry) {
+                entry.projectSessionActive = false;
+              }
             }
-          }
-        },
-        isChatSendRunActive: (runId) => {
-          const entry = params.chatAbortControllers.get(runId);
-          return entry !== undefined && entry.kind !== "agent";
-        },
-      }),
+          },
+          isChatSendRunActive: (runId) => {
+            const entry = params.chatAbortControllers.get(runId);
+            return entry !== undefined && entry.kind !== "agent";
+          },
+          // Live [avatar:<state>] marker broadcast. No-op unless the speaking
+          // agent is configured with a multi-state avatar.
+          avatarMarkerBroadcast: createAvatarMarkerBroadcast({
+            getConfig: () => loadConfig(),
+          }),
+        }),
     );
     return agentEventHandlerPromise;
   };

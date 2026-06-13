@@ -17,6 +17,11 @@ import {
 } from "../shared/avatar-policy.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "./agent-scope.js";
+import {
+  buildAvatarStateInstruction,
+  isAgentAvatarStatesConfig,
+  type AgentAvatarStatesConfig,
+} from "./identity-avatar-states.js";
 import { loadAgentIdentityFromWorkspace } from "./identity-file.js";
 import { resolveAgentIdentity } from "./identity.js";
 
@@ -27,7 +32,13 @@ export type AgentAvatarResolution =
   | { kind: "none"; reason: string; source?: string }
   | { kind: "local"; filePath: string; source: string }
   | { kind: "remote"; url: string; source: string }
-  | { kind: "data"; url: string; source: string };
+  | { kind: "data"; url: string; source: string }
+  | {
+      kind: "states";
+      default: string;
+      states: AgentAvatarStatesConfig["states"];
+      instruction: string;
+    };
 
 type AgentAvatarPublicSourceInput = {
   kind: AgentAvatarResolution["kind"];
@@ -37,33 +48,43 @@ type AgentAvatarPublicSourceInput = {
 const PUBLIC_AVATAR_SOURCE_MAX_CHARS = 256;
 const PUBLIC_DATA_AVATAR_HEADER_MAX_CHARS = 64;
 
+function resolveRawAvatarValue(
+  cfg: OpenClawConfig,
+  agentId: string,
+  opts?: { includeUiOverride?: boolean },
+): unknown {
+  const normalizedAgentId = normalizeAgentId(agentId);
+  const defaultAgentId = normalizeAgentId(resolveDefaultAgentId(cfg));
+  const fromUiConfig = cfg.ui?.assistant?.avatar;
+  if (opts?.includeUiOverride) {
+    // UI override only wins for the default agent unless callers explicitly ask
+    // for it as a final fallback for non-default agents.
+    if (normalizedAgentId === defaultAgentId && fromUiConfig !== undefined) {
+      return fromUiConfig;
+    }
+  }
+  const fromConfig = resolveAgentIdentity(cfg, normalizedAgentId)?.avatar;
+  if (fromConfig !== undefined) {
+    return fromConfig;
+  }
+  const workspace = resolveAgentWorkspaceDir(cfg, normalizedAgentId);
+  const fromIdentity = loadAgentIdentityFromWorkspace(workspace)?.avatar;
+  if (fromIdentity !== undefined) {
+    return fromIdentity;
+  }
+  return opts?.includeUiOverride ? fromUiConfig : undefined;
+}
+
 function resolveAvatarSource(
   cfg: OpenClawConfig,
   agentId: string,
   opts?: { includeUiOverride?: boolean },
 ): string | null {
-  const normalizedAgentId = normalizeAgentId(agentId);
-  const defaultAgentId = normalizeAgentId(resolveDefaultAgentId(cfg));
-  const fromUiConfig = normalizeOptionalString(cfg.ui?.assistant?.avatar) ?? null;
-  if (opts?.includeUiOverride) {
-    // UI override only wins for the default agent unless callers explicitly ask
-    // for it as a final fallback for non-default agents.
-    if (normalizedAgentId === defaultAgentId && fromUiConfig) {
-      return fromUiConfig;
-    }
+  const raw = resolveRawAvatarValue(cfg, agentId, opts);
+  if (typeof raw !== "string") {
+    return null;
   }
-  const fromConfig =
-    normalizeOptionalString(resolveAgentIdentity(cfg, normalizedAgentId)?.avatar) ?? null;
-  if (fromConfig) {
-    return fromConfig;
-  }
-  const workspace = resolveAgentWorkspaceDir(cfg, normalizedAgentId);
-  const fromIdentity =
-    normalizeOptionalString(loadAgentIdentityFromWorkspace(workspace)?.avatar) ?? null;
-  if (fromIdentity) {
-    return fromIdentity;
-  }
-  return opts?.includeUiOverride ? fromUiConfig : null;
+  return normalizeOptionalString(raw) ?? null;
 }
 
 function resolveExistingPath(value: string): string {
@@ -151,6 +172,15 @@ export function resolveAgentAvatar(
   agentId: string,
   opts?: { includeUiOverride?: boolean },
 ): AgentAvatarResolution {
+  const raw = resolveRawAvatarValue(cfg, agentId, opts);
+  if (isAgentAvatarStatesConfig(raw)) {
+    return {
+      kind: "states",
+      default: raw.default,
+      states: raw.states,
+      instruction: buildAvatarStateInstruction(raw),
+    };
+  }
   const source = resolveAvatarSource(cfg, agentId, opts);
   if (!source) {
     return { kind: "none", reason: "missing" };

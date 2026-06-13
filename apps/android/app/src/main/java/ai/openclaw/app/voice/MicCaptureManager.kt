@@ -1,5 +1,7 @@
 package ai.openclaw.app.voice
 
+import ai.openclaw.app.avatar.AvatarMarker
+import ai.openclaw.app.avatar.parseAvatarMarkers
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
@@ -9,6 +11,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.util.Log
 import androidx.core.content.ContextCompat
+import ai.openclaw.app.diag.PhoneDiagLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -60,6 +63,29 @@ class MicCaptureManager(
    */
   private val sendToGateway: suspend (message: String, onRunIdKnown: (String) -> Unit) -> String?,
   private val speakAssistantReply: suspend (String) -> Unit = {},
+  /**
+   * Fired once per completed assistant reply, with the ordered list of
+   * `<<<state-N>>>` markers parsed out of the model's text. NodeRuntime uses
+   * this to drive the avatar's emotion animation client-side without
+   * round-tripping through a gateway-emitted state event. The [String] text
+   * is the cleaned (marker-stripped) reply — handy for diagnostic logging.
+   */
+  private val onAssistantMarkers: (cleaned: String, markers: List<AvatarMarker>) -> Unit = { _, _ -> },
+  /**
+   * Transcribe the given WAV file via the gateway's `/stream/stt` proxy.
+   * Returns the committed transcript, or null when the gateway can't reach
+   * ElevenLabs / no STT plugin is configured — callers fall back to the
+   * Android on-device SpeechRecognizer path. Passed as a callback to keep
+   * MicCaptureManager free of gateway/auth coupling.
+   */
+  private val transcribeViaGateway: (suspend (file: java.io.File) -> String?)? = null,
+  /**
+   * Is the gateway's `/stream/stt` route available right now? Checked at
+   * press-start to decide between the ElevenLabs path (record PCM + upload)
+   * and the SpeechRecognizer fallback. Evaluated lazily so gateway
+   * reconnects / config reloads take effect on the next press.
+   */
+  private val streamSttAvailable: () -> Boolean = { false },
 ) {
   companion object {
     private const val tag = "MicCapture"
@@ -69,8 +95,27 @@ class MicCaptureManager(
     private const val pcmuClip = 32635
     private const val transcriptIdleFlushMs = 1_600L
     private const val maxConversationEntries = 40
-    private const val pendingRunTimeoutMs = 45_000L
+    // Cold-start model responses (especially via openrouter) can exceed 45s;
+    // keeping the old value caused the phone to time out the runId, auto-
+    // re-send the message on the queue, and then drop the late first-reply
+    // with "chat event dropped: no pendingRunId". 120s covers the slow path.
+    private const val pendingRunTimeoutMs = 120_000L
+    private const val holdReleaseDrainMs = 2_500L
   }
+
+  @Volatile private var holdMode = false
+  private val accumulatedHoldText = mutableListOf<String>()
+  @Volatile private var suppressResultsUntilMs = 0L
+
+  // ElevenLabs-STT press-and-hold path. When [pcmRecorder] is active the
+  // SpeechRecognizer session is NOT started — we record raw PCM instead and
+  // upload on release. Null means the current hold is using the
+  // SpeechRecognizer fallback.
+  private val pcmRecorder = MicPcmRecorder(
+    context = context,
+    onInputLevel = { level -> _inputLevel.value = level },
+  )
+  @Volatile private var pcmHoldActive = false
 
   private val json = Json { ignoreUnknownKeys = true }
 
@@ -115,12 +160,36 @@ class MicCaptureManager(
   private var transcriptionCaptureJob: Job? = null
   private var transcriptionAppendJob: Job? = null
   private var transcriptionDrainJob: Job? = null
+
+  // Sliding window of runIds we've sent in the last few turns whose final /
+  // error / aborted event hasn't landed yet. Prevents "chat event dropped: no
+  // pendingRunId" when a reply arrives after pendingRunTimeoutMs cleared
+  // pendingRunId and the queue already moved on to a new runId. Events for
+  // any runId in this set are still processed — late replies display in the
+  // UI instead of getting silently swallowed.
+  private val recentRunIds = LinkedHashSet<String>()
+  private val recentRunIdsLock = Any()
+  private val recentRunIdsWindow = 6
   private var transcriptFlushJob: Job? = null
   private var pendingRunTimeoutJob: Job? = null
   private var stopRequested = false
   private val ttsPauseLock = Any()
   private var ttsPauseDepth = 0
   private var resumeMicAfterTts = false
+
+  /**
+   * Drop the voice-tab conversation history. Called when the dial rotates
+   * an agent's session — the UI should show a blank slate for the fresh
+   * conversation. Doesn't touch the pending turn or the queued-message
+   * buffer (those already get cleaned up by completePendingTurn / drain).
+   */
+  fun clearConversation() {
+    _conversation.value = emptyList()
+    _liveTranscript.value = null
+    pendingAssistantEntryId = null
+    flushedPartialTranscript = null
+    PhoneDiagLog.info("mic", "conversation cleared (new session)")
+  }
 
   private fun enqueueMessage(message: String) {
     synchronized(messageQueueLock) {
@@ -157,6 +226,14 @@ class MicCaptureManager(
   fun setMicEnabled(enabled: Boolean) {
     if (_micEnabled.value == enabled) return
     _micEnabled.value = enabled
+    PhoneDiagLog.info("mic", if (enabled) "enabled" else "disabled")
+    // If an external teardown (e.g. leaving the Voice screen) flips the mic
+    // off while we're mid-PCM-hold, make sure the AudioRecord + writer thread
+    // stop — otherwise they leak until the process dies.
+    if (!enabled && pcmHoldActive) {
+      pcmHoldActive = false
+      pcmRecorder.cancel()
+    }
     if (enabled) {
       val pausedForTts =
         synchronized(ttsPauseLock) {
@@ -202,6 +279,108 @@ class MicCaptureManager(
     _micCooldown.value = false
     _liveTranscript.value = null
     stop()
+  }
+
+  /**
+   * Enter press-and-hold mode. When the gateway has `streamStt.enabled=true`
+   * and a [transcribeViaGateway] callback is wired, we record raw 16 kHz PCM
+   * to a temp file for upload on release (ElevenLabs-via-gateway path).
+   * Otherwise we keep the Android SpeechRecognizer alive through silence as a
+   * fallback so the feature still works on gateways without the STT plugin.
+   */
+  fun startHold() {
+    synchronized(accumulatedHoldText) { accumulatedHoldText.clear() }
+    suppressResultsUntilMs = 0L
+
+    val useElevenLabs = transcribeViaGateway != null && streamSttAvailable()
+    if (useElevenLabs) {
+      pcmHoldActive = pcmRecorder.start()
+      if (pcmHoldActive) {
+        PhoneDiagLog.info("mic", "hold start path=elevenlabs-stt")
+        _micEnabled.value = true
+        _isListening.value = true
+        _statusText.value = "Recording…"
+        return
+      }
+      // Recorder failed (permission / device busy) — fall through to the
+      // SpeechRecognizer path so the user still gets some transcription.
+      PhoneDiagLog.warn("mic", "pcm recorder start failed; falling back to SpeechRecognizer")
+    }
+
+    holdMode = true
+    PhoneDiagLog.info("mic", "hold start path=speech-recognizer")
+    setMicEnabled(true)
+  }
+
+  /**
+   * Exit press-and-hold mode. On the ElevenLabs path this stops the
+   * [MicPcmRecorder], uploads the resulting WAV via [transcribeViaGateway],
+   * and queues the returned transcript. On the SpeechRecognizer fallback
+   * path it flushes the accumulated text captured across any mid-hold
+   * recognizer cutoffs.
+   */
+  fun stopHold() {
+    if (pcmHoldActive) {
+      pcmHoldActive = false
+      _isListening.value = false
+      _inputLevel.value = 0f
+      _micEnabled.value = false
+      // Gate the button so users can't re-press while the upload is in flight.
+      _micCooldown.value = true
+      _statusText.value = "Transcribing…"
+      val transcribe = transcribeViaGateway
+      scope.launch {
+        try {
+          val file = pcmRecorder.stop()
+          if (file == null) {
+            PhoneDiagLog.warn("mic", "hold release — no audio captured")
+            _statusText.value = "Mic off"
+            return@launch
+          }
+          PhoneDiagLog.info("mic", "hold release path=elevenlabs-stt bytes=${file.length()}")
+          val text = try {
+            transcribe?.invoke(file)
+          } catch (e: Throwable) {
+            PhoneDiagLog.error("mic", "transcribeViaGateway threw: ${e.javaClass.simpleName}")
+            null
+          }
+          file.delete()
+          if (text.isNullOrBlank()) {
+            _statusText.value = "Transcription failed"
+            PhoneDiagLog.warn("mic", "hold release — empty transcript")
+            return@launch
+          }
+          PhoneDiagLog.info("mic", "hold release — queued transcript chars=${text.length}")
+          queueRecognizedMessage(text.trim())
+          sendQueuedIfIdle()
+        } finally {
+          _micCooldown.value = false
+        }
+      }
+      return
+    }
+
+    if (!holdMode && accumulatedHoldText.isEmpty()) {
+      setMicEnabled(false)
+      return
+    }
+    val combined = synchronized(accumulatedHoldText) {
+      val parts = accumulatedHoldText.toList()
+      accumulatedHoldText.clear()
+      val partial = _liveTranscript.value?.trim().orEmpty()
+      (parts + partial).filter { it.isNotBlank() }.joinToString(" ").trim()
+    }
+    holdMode = false
+    // Discard any onResults that arrive during the recognizer drain window;
+    // the accumulated text has already been captured above.
+    suppressResultsUntilMs = System.currentTimeMillis() + holdReleaseDrainMs
+    _liveTranscript.value = null
+    PhoneDiagLog.info("mic", "hold release path=speech-recognizer chars=${combined.length}")
+    setMicEnabled(false)
+    if (combined.isNotEmpty()) {
+      queueRecognizedMessage(combined)
+      sendQueuedIfIdle()
+    }
   }
 
   /** Pauses capture while local TTS plays so speaker output is not transcribed as user speech. */
@@ -290,6 +469,10 @@ class MicCaptureManager(
     }
     if (event != "chat") return
     if (payloadJson.isNullOrBlank()) return
+    // Raw-arrival log (before any filtering) — tells us whether the
+    // gateway is emitting chat events at all when the phone isn't
+    // receiving replies.
+    PhoneDiagLog.incoming("mic", "chat event bytes=${payloadJson.length}")
     val payload =
       try {
         json.parseToJsonElement(payloadJson).asObjectOrNull()
@@ -297,33 +480,57 @@ class MicCaptureManager(
         null
       } ?: return
 
-    val runId =
-      pendingRunId ?: run {
-        Log.d("MicCapture", "no pendingRunId — drop")
-        return
-      }
     val eventRunId = payload["runId"].asStringOrNull() ?: return
-    if (eventRunId != runId) {
-      Log.d("MicCapture", "runId mismatch: event=$eventRunId pending=$runId")
+    val matchesPending = pendingRunId != null && pendingRunId == eventRunId
+    val matchesRecent = isRecentRunId(eventRunId)
+    if (!matchesPending && !matchesRecent) {
+      Log.d("MicCapture", "runId not tracked: event=$eventRunId pending=$pendingRunId")
+      PhoneDiagLog.warn(
+        "mic",
+        "chat event dropped: runId event=${eventRunId.take(8)} not tracked (pending=${pendingRunId?.take(8) ?: "null"})",
+      )
       return
     }
 
-    when (payload["state"].asStringOrNull()) {
+    val state = payload["state"].asStringOrNull()
+    when (state) {
       "delta" -> {
-        val deltaText = parseAssistantText(payload)
-        if (!deltaText.isNullOrBlank()) {
-          upsertPendingAssistant(text = deltaText.trim(), isStreaming = true)
+        val rawDelta = parseAssistantText(payload)
+        if (!rawDelta.isNullOrBlank()) {
+          // Strip `<<<state-N>>>` markers from the streamed text before it
+          // reaches the UI — keeps the bubble clean while the model types.
+          // We don't dispatch markers here because delta payloads are
+          // cumulative (each one replaces the previous); firing marker
+          // callbacks on every delta would re-dispatch the same emotion
+          // repeatedly. The "final" branch handles dispatch once.
+          val parsed = parseAvatarMarkers(rawDelta)
+          upsertPendingAssistant(text = parsed.cleanedText.trim(), isStreaming = true)
         }
       }
       "final" -> {
-        val finalText = parseAssistantText(payload)?.trim().orEmpty()
+        val rawFinal = parseAssistantText(payload)?.trim().orEmpty()
+        val parsed = parseAvatarMarkers(rawFinal)
+        val finalText = parsed.cleanedText
+        PhoneDiagLog.incoming(
+          "mic",
+          "chat final chars=${finalText.length}" +
+            (if (parsed.markers.isNotEmpty()) " markers=${parsed.markers.size}" else "") +
+            (if (!matchesPending) " (late/recent)" else "") +
+            if (finalText.isNotEmpty()) " \"${finalText.take(40)}${if (finalText.length > 40) "…" else ""}\"" else "",
+        )
         if (finalText.isNotEmpty()) {
           upsertPendingAssistant(text = finalText, isStreaming = false)
+          // Feed the CLEAN text to TTS so `<<<happy-1>>>` etc. never gets
+          // vocalised by ElevenLabs.
           playAssistantReplyAsync(finalText)
         } else if (pendingAssistantEntryId != null) {
           updateConversationEntry(pendingAssistantEntryId!!, text = null, isStreaming = false)
         }
-        completePendingTurn()
+        if (parsed.markers.isNotEmpty()) {
+          onAssistantMarkers(finalText, parsed.markers)
+        }
+        forgetRunId(eventRunId)
+        if (matchesPending) completePendingTurn() else dropHeadQueuedMessage()
       }
       "error" -> {
         val errorMessage =
@@ -332,13 +539,57 @@ class MicCaptureManager(
             ?.trim()
             .orEmpty()
             .ifEmpty { "Voice request failed" }
+        PhoneDiagLog.error("mic", "chat error: ${errorMessage.take(60)}" + if (!matchesPending) " (late/recent)" else "")
         upsertPendingAssistant(text = errorMessage, isStreaming = false)
-        completePendingTurn()
+        forgetRunId(eventRunId)
+        if (matchesPending) completePendingTurn() else dropHeadQueuedMessage()
       }
       "aborted" -> {
+        PhoneDiagLog.warn("mic", "chat aborted" + if (!matchesPending) " (late/recent)" else "")
         upsertPendingAssistant(text = "Response aborted", isStreaming = false)
-        completePendingTurn()
+        forgetRunId(eventRunId)
+        if (matchesPending) completePendingTurn() else dropHeadQueuedMessage()
       }
+      else -> {
+        if (!state.isNullOrBlank()) {
+          PhoneDiagLog.info("mic", "chat event state=$state")
+        }
+      }
+    }
+  }
+
+  private fun rememberRunId(runId: String) {
+    synchronized(recentRunIdsLock) {
+      // LinkedHashSet preserves insertion order; remove-then-add bumps an
+      // existing key to the newest slot so it isn't evicted prematurely.
+      recentRunIds.remove(runId)
+      recentRunIds.add(runId)
+      while (recentRunIds.size > recentRunIdsWindow) {
+        val iterator = recentRunIds.iterator()
+        if (iterator.hasNext()) {
+          iterator.next()
+          iterator.remove()
+        }
+      }
+    }
+  }
+
+  private fun isRecentRunId(runId: String): Boolean =
+    synchronized(recentRunIdsLock) { runId in recentRunIds }
+
+  private fun forgetRunId(runId: String) {
+    synchronized(recentRunIdsLock) { recentRunIds.remove(runId) }
+  }
+
+  /**
+   * Remove the head queued message after a late reply is accepted post-
+   * watchdog. The user got their answer; we don't want the next turn to
+   * redeliver the same message. Keeps the conversation forward-moving even
+   * when the gateway response straddled [pendingRunTimeoutMs].
+   */
+  private fun dropHeadQueuedMessage() {
+    if (removeFirstQueuedMessage() != null) {
+      publishQueue()
     }
   }
 
@@ -434,6 +685,10 @@ class MicCaptureManager(
     val message = text.trim()
     _liveTranscript.value = null
     if (!message.hasTranscriptContent()) return
+    PhoneDiagLog.outgoing(
+      "mic",
+      "queueing msg chars=${message.length} \"${message.take(40)}${if (message.length > 40) "…" else ""}\"",
+    )
     appendConversation(
       role = VoiceConversationRole.User,
       text = message,
@@ -443,6 +698,9 @@ class MicCaptureManager(
   }
 
   private fun scheduleTranscriptFlush(expectedText: String) {
+    // Hold mode owns the turn boundary — partial-idle auto-commit would
+    // race against the release handler in [stopHold].
+    if (holdMode) return
     transcriptFlushJob?.cancel()
     transcriptFlushJob =
       scope.launch {
@@ -483,15 +741,19 @@ class MicCaptureManager(
 
     scope.launch {
       try {
+        PhoneDiagLog.outgoing("mic", "chat.send chars=${next.length}")
         val runId =
           sendToGateway(next) { earlyRunId ->
             // Called with the idempotency key before chat.send fires so that
             // pendingRunId is populated before any chat events can arrive.
             pendingRunId = earlyRunId
+            rememberRunId(earlyRunId)
           }
         // Update to the real runId if the gateway returned a different one.
         if (runId != null && runId != pendingRunId) pendingRunId = runId
+        if (runId != null) rememberRunId(runId)
         if (runId == null) {
+          PhoneDiagLog.warn("mic", "chat.send returned null runId — send dropped")
           pendingRunTimeoutJob?.cancel()
           pendingRunTimeoutJob = null
           removeFirstQueuedMessage()
@@ -500,9 +762,11 @@ class MicCaptureManager(
           pendingAssistantEntryId = null
           sendQueuedIfIdle()
         } else {
+          PhoneDiagLog.info("mic", "chat.send runId=${runId.take(8)} armed")
           armPendingRunTimeout(runId)
         }
       } catch (err: Throwable) {
+        PhoneDiagLog.error("mic", "chat.send threw: ${err.message?.take(60) ?: err::class.simpleName}")
         pendingRunTimeoutJob?.cancel()
         pendingRunTimeoutJob = null
         _isSending.value = false
@@ -524,16 +788,26 @@ class MicCaptureManager(
       scope.launch {
         delay(pendingRunTimeoutMs)
         if (pendingRunId != runId) return@launch
+        // Watchdog fired — clear pending state so new turns aren't blocked,
+        // but DO NOT auto-resend the queued message. The old "resend on
+        // timeout" behavior caused duplicate turns when the original reply
+        // arrived a few seconds late. recentRunIds still holds this id, so
+        // if the gateway eventually emits a final/error/aborted for it, the
+        // reply lands in the UI and clears the queued entry naturally (see
+        // handleGatewayEvent's !matchesPending branch).
+        PhoneDiagLog.warn(
+          "mic",
+          "pending run watchdog: runId=${runId.take(8)} (late reply still accepted, no auto-resend)",
+        )
         pendingRunId = null
         pendingAssistantEntryId = null
         _isSending.value = false
         _statusText.value =
           if (gatewayConnected) {
-            "Voice reply timed out; retrying queued turn"
+            "Reply slow; still waiting"
           } else {
             queuedWaitingStatus()
           }
-        sendQueuedIfIdle()
       }
   }
 
@@ -718,6 +992,13 @@ class MicCaptureManager(
       "transcript" -> {
         transcriptFlushJob?.cancel()
         transcriptFlushJob = null
+        // Drain-window guard: suppress a stray gateway transcript that arrives
+        // just after the user released a press-and-hold (the audio was already
+        // captured + uploaded by stopHold; this would otherwise double-queue).
+        if (System.currentTimeMillis() < suppressResultsUntilMs) {
+          _liveTranscript.value = null
+          return
+        }
         val text = obj["text"].asStringOrNull()?.trim().orEmpty()
         if (text.isNotEmpty()) {
           if (text != flushedPartialTranscript) {

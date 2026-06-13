@@ -16,6 +16,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,12 +40,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -62,7 +66,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -89,11 +95,11 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
   val voiceCaptureMode by viewModel.voiceCaptureMode.collectAsState()
   val micEnabled by viewModel.micEnabled.collectAsState()
   val micCooldown by viewModel.micCooldown.collectAsState()
-  val speakerEnabled by viewModel.speakerEnabled.collectAsState()
   val micStatusText by viewModel.micStatusText.collectAsState()
   val micLiveTranscript by viewModel.micLiveTranscript.collectAsState()
   val micQueuedMessages by viewModel.micQueuedMessages.collectAsState()
   val micConversation by viewModel.micConversation.collectAsState()
+  val activeAgentId by viewModel.activeAgentId.collectAsState()
   val micInputLevel by viewModel.micInputLevel.collectAsState()
   val micIsSending by viewModel.micIsSending.collectAsState()
   val talkModeEnabled by viewModel.talkModeEnabled.collectAsState()
@@ -222,36 +228,42 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
         }
       }
 
-      // Mic button with input-reactive ring + speaker toggle
+      // "New chat" pill — rotates the active agent's session key so the
+      // next user turn starts from an empty gateway history. Disabled when
+      // no agent is active (e.g., before pairing completes).
+      val resetTargetAgent = activeAgentId
+      if (resetTargetAgent != null) {
+        Row(
+          modifier = Modifier
+            .padding(bottom = 8.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .background(mobileAccentSoft)
+            .border(1.dp, mobileAccent.copy(alpha = 0.35f), RoundedCornerShape(999.dp))
+            .clickable { viewModel.newSessionForAgent(resetTargetAgent) }
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Icon(
+            imageVector = Icons.Default.Refresh,
+            contentDescription = "Start new chat",
+            modifier = Modifier.size(16.dp),
+            tint = mobileAccent,
+          )
+          Text(
+            text = "New chat",
+            style = mobileCaption2,
+            color = mobileAccent,
+          )
+        }
+      }
+
+      // Mic button with input-reactive ring.
       Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        // Speaker toggle
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-          IconButton(
-            onClick = { viewModel.setSpeakerEnabled(!speakerEnabled) },
-            modifier = Modifier.size(48.dp),
-            colors =
-              IconButtonDefaults.iconButtonColors(
-                containerColor = if (speakerEnabled) mobileSurface else mobileDangerSoft,
-              ),
-          ) {
-            Icon(
-              imageVector = if (speakerEnabled) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
-              contentDescription = if (speakerEnabled) "Mute speaker" else "Unmute speaker",
-              modifier = Modifier.size(22.dp),
-              tint = if (speakerEnabled) mobileTextSecondary else mobileDanger,
-            )
-          }
-          Text(
-            if (speakerEnabled) "Speaker" else "Muted",
-            style = mobileCaption2,
-            color = if (speakerEnabled) mobileTextTertiary else mobileDanger,
-          )
-        }
-
         // Ring size = 68dp base + up to 22dp driven by mic input level.
         // The outer Box is fixed at 90dp (max ring size) so the ring never shifts the button.
         Box(
@@ -303,8 +315,11 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
           ) {
             Icon(
               imageVector = if (micEnabled) Icons.Default.MicOff else Icons.Default.Mic,
-              contentDescription = if (micEnabled) "Turn microphone off" else "Turn microphone on",
-              modifier = Modifier.size(24.dp),
+              contentDescription = if (micEnabled) "Recording — release to send" else "Hold to talk",
+              modifier = Modifier
+                .size(24.dp)
+                .alpha(if (micCooldown) 0.5f else 1f),
+              tint = Color.White,
             )
           }
         }

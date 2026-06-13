@@ -1,5 +1,6 @@
 package ai.openclaw.app.gateway
 
+import ai.openclaw.app.diag.PhoneDeepLog
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -508,6 +509,11 @@ class GatewaySession(
 
     suspend fun sendJson(obj: JsonObject) {
       val jsonString = obj.toString()
+      // Mirror every outbound WS frame into PhoneDeepLog. Summary line keeps
+      // RPC method / event name visible; full text goes in the preview so a
+      // copy-all export is good enough to reconstruct a gateway session.
+      val summary = wsFrameSummary(obj)
+      PhoneDeepLog.outgoing("ws", "$summary ${jsonString.length}B :: ${jsonString.take(200)}")
       writeLock.withLock {
         if (socket?.send(jsonString) != true) {
           throw IllegalStateException("gateway send failed")
@@ -904,6 +910,9 @@ class GatewaySession(
 
     private suspend fun handleMessage(text: String) {
       val frame = json.parseToJsonElement(text).asObjectOrNull() ?: return
+      // Mirror every inbound WS frame into PhoneDeepLog before dispatch.
+      val summary = wsFrameSummary(frame)
+      PhoneDeepLog.incoming("ws", "$summary ${text.length}B :: ${text.take(200)}")
       when (frame["type"].asStringOrNull()) {
         "res" -> handleResponse(frame)
         "event" -> handleEvent(frame)
@@ -1370,4 +1379,22 @@ private fun parseJsonOrNull(payload: String): JsonElement? {
 internal fun resolveInvokeResultAckTimeoutMs(invokeTimeoutMs: Long?): Long {
   val normalized = invokeTimeoutMs?.takeIf { it > 0L } ?: 15_000L
   return normalized.coerceIn(15_000L, 120_000L)
+}
+
+/**
+ * Short summary for a WS frame used by the PHONE DEEP panel. Surfaces the
+ * RPC method / event name so a scrolling capture is readable at a glance.
+ */
+private fun wsFrameSummary(obj: JsonObject): String {
+  val type = obj["type"].asStringOrNull() ?: "?"
+  return when (type) {
+    "req" -> "req ${obj["method"].asStringOrNull() ?: "?"}"
+    "res" -> {
+      val ok = obj["ok"].asBooleanOrNull()
+      val id = obj["id"].asStringOrNull()?.take(8) ?: "?"
+      "res $id ${if (ok == true) "ok" else "err"}"
+    }
+    "event" -> "event ${obj["event"].asStringOrNull() ?: "?"}"
+    else -> type
+  }
 }

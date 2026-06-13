@@ -135,6 +135,9 @@ fun ShellScreen(
       activeTab =
         when (destination) {
           HomeDestination.Connect -> Tab.Overview
+          // The agent dial is a voice-first surface; route its launch request
+          // to the Voice tab since modern's shell has no dedicated Dial tab.
+          HomeDestination.Dial -> Tab.Voice
           HomeDestination.Chat -> Tab.Chat
           HomeDestination.Voice -> Tab.Voice
           HomeDestination.Screen -> Tab.Chat

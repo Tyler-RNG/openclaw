@@ -25,6 +25,7 @@ import android.speech.tts.UtteranceProgressListener
 import android.util.Base64
 import android.util.Log
 import androidx.core.content.ContextCompat
+import ai.openclaw.app.diag.PhoneDiagLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -98,11 +99,35 @@ class TalkModeManager internal constructor(
   private val scope: CoroutineScope,
   private val session: GatewaySession,
   private val isConnected: () -> Boolean,
+  /**
+   * Avatar-aware speech synthesizer. Wraps the talk.speak RPC plus the direct
+   * data-plane `/stream/tts` path and applies per-agent emotion directives.
+   * Used for the segment-by-segment avatar playback path. Defaults to a plain
+   * RPC-backed speaker (no data-plane) so test/legacy callers don't have to
+   * thread the full data-plane wiring.
+   */
+  private val talkSpeaker: TalkSpeaker =
+    TalkSpeaker(
+      rpcClient = TalkSpeakRpcClient(session = session),
+      dataPlaneFetcher = TalkDataPlaneTtsFetcher(assetUploader = null),
+      session = session,
+      dataPlaneLookup = { null },
+      authTokenLookup = { null },
+    ),
+  /** Current agent id, for looking up emotion directive overrides. May be null when no agent is selected. */
+  private val currentAgentId: () -> String? = { null },
   private val onBeforeSpeak: suspend () -> Unit = {},
   private val onAfterSpeak: suspend () -> Unit = {},
   private val onStoppedByRelay: () -> Unit = {},
   private val talkSpeakClient: TalkSpeechSynthesizing = TalkSpeakClient(session = session),
   private val talkAudioPlayer: TalkAudioPlaying = TalkAudioPlayer(context),
+  /**
+   * Per-segment avatar state dispatch. Called with the emotion state name from
+   * each `<<<state>>>` marker as we enter its segment so the phone's dial
+   * swaps animations in sync with the voice. Null when there is no active
+   * agent or the runtime doesn't wire an avatar cache.
+   */
+  private val dispatchAgentState: (stateName: String) -> Unit = {},
 ) {
   companion object {
     private const val tag = "TalkMode"
@@ -527,7 +552,14 @@ class TalkModeManager internal constructor(
 
   /** Speaks a chat assistant reply when playback is enabled. */
   suspend fun speakAssistantReply(text: String) {
-    if (!playbackEnabled) return
+    PhoneDiagLog.info(
+      "talk",
+      "speakAssistantReply entry chars=${text.length} playbackEnabled=$playbackEnabled",
+    )
+    if (!playbackEnabled) {
+      PhoneDiagLog.warn("talk", "speak skipped: playbackEnabled=false (speaker muted in prefs)")
+      return
+    }
     val playbackToken = playbackGeneration.incrementAndGet()
     cancelActivePlayback()
     ensureConfigLoaded()
@@ -1833,29 +1865,57 @@ class TalkModeManager internal constructor(
     _lastAssistantText.value = cleaned
     ensurePlaybackActive(playbackToken)
 
+    // Split on `<<<state>>>` markers so each segment gets the emotion
+    // directive of the preceding marker (null before the first marker). The
+    // parser strips the markers from each segment's text as a side effect.
+    val segments = ai.openclaw.app.avatar.splitByMarkers(cleaned)
+      .map { it.copy(text = it.text.trim()) }
+      .filter { it.text.isNotEmpty() }
+    if (segments.isEmpty()) return
+
+    val agentId = currentAgentId()
+    PhoneDiagLog.info(
+      "talk",
+      "play agent=${agentId ?: "?"} segments=${segments.size} chars=${cleaned.length}",
+    )
+
     _statusText.value = "Generating voice…"
     _isSpeaking.value = false
     lastSpokenText = cleaned
 
     try {
       val started = SystemClock.elapsedRealtime()
-      when (val result = talkSpeakClient.synthesize(text = cleaned, directive = directive)) {
-        is TalkSpeakResult.Success -> {
-          ensurePlaybackActive(playbackToken)
-          markAudioPlaybackStarting(playbackToken)
-          talkAudioPlayer.play(result.audio)
-          ensurePlaybackActive(playbackToken)
-          Log.d(tag, "talk.speak ok durMs=${SystemClock.elapsedRealtime() - started}")
-        }
-        is TalkSpeakResult.FallbackToLocal -> {
-          Log.d(tag, "talk.speak unavailable; using local TTS: ${result.message}")
-          speakWithSystemTts(cleaned, directive, playbackToken)
-          Log.d(tag, "system tts ok durMs=${SystemClock.elapsedRealtime() - started}")
-        }
-        is TalkSpeakResult.Failure -> {
-          throw IllegalStateException(result.message)
+      for (segment in segments) {
+        // Swap the dial avatar to this segment's emotion state (if any) just
+        // before speaking so the visual lines up with the voice.
+        segment.emotion?.takeIf { it.isNotBlank() }?.let { dispatchAgentState(it) }
+        when (
+          val result = talkSpeaker.synthesizeForPhone(
+            text = segment.text,
+            baseDirective = directive,
+            agentId = agentId,
+            emotion = segment.emotion,
+          )
+        ) {
+          is TalkSpeakResult.Success -> {
+            ensurePlaybackActive(playbackToken)
+            markAudioPlaybackStarting(playbackToken)
+            talkAudioPlayer.play(result.audio)
+            ensurePlaybackActive(playbackToken)
+          }
+          is TalkSpeakResult.FallbackToLocal -> {
+            Log.d(tag, "talk.speak unavailable; using local TTS: ${result.message}")
+            speakWithSystemTts(segment.text, directive, playbackToken)
+          }
+          is TalkSpeakResult.Failure -> {
+            throw IllegalStateException(result.message)
+          }
         }
       }
+      Log.d(
+        tag,
+        "talk.speak ok segments=${segments.size} durMs=${SystemClock.elapsedRealtime() - started}",
+      )
     } catch (err: Throwable) {
       if (isPlaybackCancelled(err, playbackToken)) {
         Log.d(tag, "assistant speech cancelled")
@@ -1885,6 +1945,10 @@ class TalkModeManager internal constructor(
           }
         }
       if (!claimedPlayback) {
+        PhoneDiagLog.warn(
+          "talk",
+          "playback not claimed: playbackEnabled=$playbackEnabled token=$playbackToken gen=${playbackGeneration.get()}",
+        )
         ensurePlaybackActive(playbackToken)
         return
       }
@@ -1925,6 +1989,9 @@ class TalkModeManager internal constructor(
   ) {
     ensurePlaybackActive(playbackToken)
     val engine = ensureTextToSpeech()
+    // Strip XML/HTML markup so the Android TTS engine doesn't pronounce the
+    // literal characters ("less than sign", "ampersand L T …").
+    val cleanText = sanitizeTextForTts(text)
     val utteranceId = UUID.randomUUID().toString()
     val finished = CompletableDeferred<Unit>()
     withContext(Dispatchers.Main) {
@@ -1990,7 +2057,7 @@ class TalkModeManager internal constructor(
         },
       )
       markAudioPlaybackStarting(playbackToken)
-      val result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+      val result = engine.speak(cleanText, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
       if (result != TextToSpeech.SUCCESS) {
         throw IllegalStateException("TextToSpeech start failed")
       }

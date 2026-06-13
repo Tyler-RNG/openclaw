@@ -172,6 +172,11 @@ ktlint {
 }
 
 dependencies {
+  // DisplayKit sprite-core SDK for character manifests / avatar playback,
+  // shared with the :watch and :glasses wearable apps.
+  implementation(project(":displaykit"))
+  implementation(project(":displaykit-android"))
+
   val composeBom = platform(libs.androidx.compose.bom)
   implementation(composeBom)
   androidTestImplementation(composeBom)
@@ -215,6 +220,10 @@ dependencies {
 
   // Unicast DNS-SD (Wide-Area Bonjour) for tailnet discovery domains.
   implementation(libs.dnsjava)
+
+  // Wearable Data Layer for watch relay (phone-side relay to :watch).
+  implementation("com.google.android.gms:play-services-wearable:19.0.0")
+  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
 
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)

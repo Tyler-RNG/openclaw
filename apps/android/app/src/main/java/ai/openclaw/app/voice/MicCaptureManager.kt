@@ -1,5 +1,7 @@
 package ai.openclaw.app.voice
 
+import ai.openclaw.spritecore.client.AvatarMarker
+import ai.openclaw.spritecore.client.parseAvatarMarkers
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
@@ -60,6 +62,26 @@ class MicCaptureManager(
    */
   private val sendToGateway: suspend (message: String, onRunIdKnown: (String) -> Unit) -> String?,
   private val speakAssistantReply: suspend (String) -> Unit = {},
+  /**
+   * Fired once per completed assistant reply, with the ordered list of
+   * `<<<state-N>>>` markers parsed out of the model's text. NodeRuntime uses
+   * this to drive the avatar's emotion animation client-side without
+   * round-tripping through a gateway-emitted state event. The [String] text
+   * is the cleaned (marker-stripped) reply — handy for diagnostic logging.
+   */
+  private val onAssistantMarkers: (cleaned: String, markers: List<AvatarMarker>) -> Unit = { _, _ -> },
+  /**
+   * Transcribe the given WAV file via the gateway's `/stream/stt` proxy.
+   * Returns the committed transcript, or null when unavailable. Reserved for
+   * the data-plane STT path; modern capture streams audio through the
+   * gateway transcription session, so this is wired but unused by default.
+   */
+  private val transcribeViaGateway: (suspend (file: java.io.File) -> String?)? = null,
+  /**
+   * Is the gateway's `/stream/stt` route available right now? Reserved for the
+   * data-plane STT path (see [transcribeViaGateway]).
+   */
+  private val streamSttAvailable: () -> Boolean = { false },
 ) {
   companion object {
     private const val tag = "MicCapture"
@@ -551,6 +573,15 @@ class MicCaptureManager(
 
   private fun queuedWaitingStatus(): String = "${queuedMessageCount()} queued · waiting for gateway"
 
+  /**
+   * Clears the local voice-tab transcript. Used by the dial's "new chat"
+   * action so the UI reflects the fresh session immediately.
+   */
+  fun clearConversation() {
+    pendingAssistantEntryId = null
+    _conversation.value = emptyList()
+  }
+
   private fun appendConversation(
     role: VoiceConversationRole,
     text: String,
@@ -606,9 +637,21 @@ class MicCaptureManager(
   private fun playAssistantReplyAsync(text: String) {
     val spoken = text.trim()
     if (spoken.isEmpty()) return
+    // Parse any `<<<state-N>>>` markers the model embedded so the avatar dial
+    // can animate emotions client-side. Dispatch the markers and speak the
+    // cleaned (marker-stripped) text.
+    val parsed = parseAvatarMarkers(spoken)
+    val cleaned = parsed.cleanedText.trim().ifEmpty { spoken }
+    if (parsed.markers.isNotEmpty()) {
+      try {
+        onAssistantMarkers(cleaned, parsed.markers)
+      } catch (err: Throwable) {
+        Log.w(tag, "assistant markers dispatch failed: ${err.message ?: err::class.simpleName}")
+      }
+    }
     scope.launch {
       try {
-        speakAssistantReply(spoken)
+        speakAssistantReply(cleaned)
       } catch (err: Throwable) {
         Log.w(tag, "assistant speech failed: ${err.message ?: err::class.simpleName}")
       }

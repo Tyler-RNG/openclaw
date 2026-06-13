@@ -1,5 +1,9 @@
 package ai.openclaw.app
 
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.viewModelScope
 import ai.openclaw.app.chat.ChatMessage
 import ai.openclaw.app.chat.ChatPendingToolCall
 import ai.openclaw.app.chat.ChatSessionEntry
@@ -12,10 +16,7 @@ import ai.openclaw.app.node.CameraCaptureManager
 import ai.openclaw.app.node.CanvasController
 import ai.openclaw.app.node.SmsManager
 import ai.openclaw.app.voice.VoiceConversationEntry
-import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.viewModelScope
+import ai.openclaw.spritecore.client.CharacterManifestEnvelope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,6 +24,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -30,9 +32,7 @@ import kotlinx.coroutines.launch
  * UI-facing bridge that exposes NodeRuntime and preference state as Compose-friendly StateFlows.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
-class MainViewModel(
-  app: Application,
-) : AndroidViewModel(app) {
+class MainViewModel(app: Application) : AndroidViewModel(app) {
   private val nodeApp = app as NodeApp
   private val prefs = nodeApp.prefs
   private val runtimeRef = MutableStateFlow<NodeRuntime?>(null)
@@ -111,6 +111,30 @@ class MainViewModel(
 
   val isConnected: StateFlow<Boolean> = runtimeState(initial = false) { it.isConnected }
   val isNodeConnected: StateFlow<Boolean> = runtimeState(initial = false) { it.nodeConnected }
+
+  /** Agents known to the gateway, for the phone's dial UI. */
+  internal val dialAgents: StateFlow<List<GatewayAgentSummary>> =
+    runtimeState(initial = emptyList()) { it.gatewayAgents }
+
+  /** Per-agent CharacterManifest envelope from the gateway node.getCharacterManifest RPC. */
+  val characterManifests: StateFlow<Map<String, CharacterManifestEnvelope>> =
+    runtimeState(initial = emptyMap()) { it.agentAvatarSource.characterManifests }
+
+  /** Per-agent asset bytes keyed by manifest.assets.refs entry. */
+  val characterAssets: StateFlow<Map<String, Map<String, ByteArray>>> =
+    runtimeState(initial = emptyMap()) { it.agentAvatarSource.characterAssets }
+
+  /** Current avatar state per agent (`[avatar:X]` markers → state name). */
+  val agentStates: StateFlow<Map<String, String>> =
+    runtimeState(initial = emptyMap()) { it.agentAvatarSource.agentStates }
+  /**
+   * Versioned per-agent marker signal — carries state + play count for
+   * `<<<state-N>>>` markers and a monotonic version so repeat markers
+   * re-trigger the UI's LaunchedEffect even when the state name is the
+   * same. Consumed by CharacterAvatar to drive the animation player.
+   */
+  val agentMarkerSignals: StateFlow<Map<String, ai.openclaw.spritecore.client.AgentAvatarSource.AvatarMarkerSignal>> =
+    runtimeState(initial = emptyMap()) { it.agentAvatarSource.agentMarkerSignals }
   val statusText: StateFlow<String> = runtimeState(initial = "Offline") { it.statusText }
   val gatewayConnectionProblem: StateFlow<GatewayConnectionProblem?> = runtimeState(initial = null) { it.gatewayConnectionProblem }
   val serverName: StateFlow<String?> = runtimeState(initial = null) { it.serverName }
@@ -383,7 +407,9 @@ class MainViewModel(
     enabled: Boolean,
     start: String,
     end: String,
-  ): Boolean = ensureRuntime().setNotificationForwardingQuietHours(enabled = enabled, start = start, end = end)
+  ): Boolean {
+    return ensureRuntime().setNotificationForwardingQuietHours(enabled = enabled, start = start, end = end)
+  }
 
   fun setNotificationForwardingMaxEventsPerMinute(value: Int) {
     ensureRuntime().setNotificationForwardingMaxEventsPerMinute(value)
@@ -415,6 +441,81 @@ class MainViewModel(
 
   fun requestHomeDestination(destination: HomeDestination) {
     _requestedHomeDestination.value = destination
+  }
+
+  /**
+   * Navigate to the Chat tab. The chat UI picks up its own active-agent
+   * state from NodeRuntime so callers don't need to thread an agent id
+   * through here.
+   */
+  fun jumpToChat() {
+    _requestedHomeDestination.value = HomeDestination.Chat
+  }
+
+  /**
+   * Currently-active agent, parsed from [mainSessionKey]. Returns null
+   * when the session key is the default `"main"` sentinel (no agent
+   * selected). UI observes this to know which agent the mic/chat
+   * surface is currently wired to.
+   */
+  val activeAgentId: StateFlow<String?> =
+    mainSessionKey
+      .map { key ->
+        val trimmed = key.trim()
+        if (trimmed.startsWith("agent:")) {
+          trimmed.removePrefix("agent:").substringBefore(':').trim().takeIf { it.isNotEmpty() }
+        } else {
+          null
+        }
+      }
+      .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+  /**
+   * Voice capture on the agent dial. Press the avatar to start recording,
+   * release to stop and send. Does NOT navigate — the recording runs in
+   * place and the reply plays back via the existing voice-reply speaker.
+   *
+   * Call [startVoiceForAgent] on pointer-down and [stopVoiceForAgent] on
+   * pointer-up (or cancellation). If the user presses a different agent
+   * while one is still capturing, [startVoiceForAgent] transparently
+   * ends the previous capture first.
+   */
+  fun startVoiceForAgent(agentId: String) {
+    val runtime = ensureRuntime()
+    val currentActive = activeAgentId.value
+    val currentlyOn = micEnabled.value
+
+    // If a different agent is currently capturing, stop it first so the
+    // captured audio is flushed to that agent (not the new one).
+    if (currentlyOn && currentActive != null && currentActive != agentId) {
+      runtime.setMicEnabled(false)
+    }
+    if (currentActive != agentId) {
+      runtime.setActiveAgent(agentId)
+    }
+    runtime.setMicEnabled(true)
+  }
+
+  /**
+   * Stop the in-flight voice capture for [agentId]. No-op if the current
+   * active agent doesn't match (e.g., the user released after the capture
+   * already naturally completed on silence).
+   */
+  fun stopVoiceForAgent(agentId: String) {
+    val runtime = ensureRuntime()
+    if (activeAgentId.value != agentId) return
+    if (!micEnabled.value) return
+    runtime.setMicEnabled(false)
+  }
+
+  /**
+   * Start a fresh conversation with [agentId]. Rotates the agent's session
+   * key so the gateway's history for the new key is empty and clears the
+   * local voice-tab conversation UI. Wired to the dial's "new chat"
+   * button.
+   */
+  fun newSessionForAgent(agentId: String) {
+    ensureRuntime().newSessionForAgent(agentId)
   }
 
   fun clearChatDraft() {
@@ -501,7 +602,9 @@ class MainViewModel(
     ensureRuntime().handleCanvasA2UIActionFromWebView(payloadJson)
   }
 
-  fun isTrustedCanvasActionUrl(rawUrl: String?): Boolean = ensureRuntime().isTrustedCanvasActionUrl(rawUrl)
+  fun isTrustedCanvasActionUrl(rawUrl: String?): Boolean {
+    return ensureRuntime().isTrustedCanvasActionUrl(rawUrl)
+  }
 
   fun requestCanvasRehydrate(source: String = "screen_tab") {
     ensureRuntime().requestCanvasRehydrate(source = source, force = true)
@@ -571,11 +674,7 @@ class MainViewModel(
     ensureRuntime().abortChat()
   }
 
-  fun sendChat(
-    message: String,
-    thinking: String,
-    attachments: List<OutgoingAttachment>,
-  ) {
+  fun sendChat(message: String, thinking: String, attachments: List<OutgoingAttachment>) {
     ensureRuntime().sendChat(message = message, thinking = thinking, attachments = attachments)
   }
 
@@ -583,10 +682,11 @@ class MainViewModel(
     message: String,
     thinking: String,
     attachments: List<OutgoingAttachment>,
-  ): Boolean =
-    ensureRuntime().sendChatAwaitAcceptance(
+  ): Boolean {
+    return ensureRuntime().sendChatAwaitAcceptance(
       message = message,
       thinking = thinking,
       attachments = attachments,
     )
+  }
 }

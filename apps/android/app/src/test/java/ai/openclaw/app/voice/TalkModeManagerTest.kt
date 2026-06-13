@@ -452,7 +452,7 @@ class TalkModeManagerTest {
     }
 
   private fun createManager(
-    talkSpeakClient: TalkSpeechSynthesizing = TalkSpeakClient(),
+    talkSpeakClient: TalkSpeechSynthesizing? = null,
     talkAudioPlayer: TalkAudioPlaying? = null,
     scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     isConnected: () -> Boolean = { true },
@@ -469,14 +469,22 @@ class TalkModeManagerTest {
         onDisconnected = {},
         onEvent = { _, _ -> },
       )
+    val talkSpeaker = TalkSpeaker(
+      rpcClient = TalkSpeakRpcClient(session = session),
+      dataPlaneFetcher = TalkDataPlaneTtsFetcher(assetUploader = null),
+      session = session,
+      dataPlaneLookup = { null },
+      authTokenLookup = { null },
+    )
     return TalkModeManager(
       context = app,
       scope = scope,
       session = session,
       isConnected = isConnected,
+      talkSpeaker = talkSpeaker,
       onStoppedByRelay = onStoppedByRelay,
-      talkSpeakClient = talkSpeakClient,
       talkAudioPlayer = talkAudioPlayer ?: TalkAudioPlayer(app),
+      talkSpeakClient = talkSpeakClient,
     )
   }
 

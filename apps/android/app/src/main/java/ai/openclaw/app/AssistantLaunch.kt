@@ -16,6 +16,7 @@ const val extraAssistantPrompt = "prompt"
  */
 enum class HomeDestination {
   Connect,
+  Dial,
   Chat,
   Voice,
   Screen,

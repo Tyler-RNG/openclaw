@@ -28,7 +28,6 @@ class GlassesMainActivity : ComponentActivity() {
 
     private fun requestRuntimePermissions() {
         val perms = buildList {
-            add(Manifest.permission.RECORD_AUDIO)
             add(Manifest.permission.BLUETOOTH_SCAN)
             add(Manifest.permission.BLUETOOTH_CONNECT)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

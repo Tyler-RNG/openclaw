@@ -482,6 +482,39 @@ class GatewayConfigResolverTest {
   }
 
   @Test
+  fun composeGatewayManualUrlDefaultsPortTo18789WhenNoTlsAndPortBlank() {
+    val url = composeGatewayManualUrl("127.0.0.1", "", tls = false)
+
+    assertEquals("http://127.0.0.1:18789", url)
+  }
+
+  @Test
+  fun resolveGatewayConnectConfigManualAcceptsTailscaleHostWithoutPort() {
+    val resolved =
+      resolveGatewayConnectConfig(
+        useSetupCode = false,
+        setupCode = "",
+        savedManualHost = "",
+        savedManualPort = "",
+        savedManualTls = true,
+        manualHostInput = "mydevice.tail1234.ts.net",
+        manualPortInput = "",
+        manualTlsInput = true,
+        fallbackBootstrapToken = "",
+        fallbackToken = "",
+        fallbackPassword = "",
+      )
+
+    assertEquals("mydevice.tail1234.ts.net", resolved?.host)
+    assertEquals(443, resolved?.port)
+    assertEquals(true, resolved?.tls)
+  }
+
+  private fun encodeSetupCode(payloadJson: String): String {
+    return Base64.getUrlEncoder().withoutPadding().encodeToString(payloadJson.toByteArray(Charsets.UTF_8))
+  }
+
+  @Test
   fun composeGatewayManualUrlRejectsBlankPortWhenTlsIsOff() {
     val url = composeGatewayManualUrl("127.0.0.1", "", tls = false)
 

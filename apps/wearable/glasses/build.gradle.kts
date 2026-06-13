@@ -56,9 +56,10 @@ kotlin {
 }
 
 dependencies {
-    // SpriteCore: core animation engine + Android bitmap source + Compose
-    // wrapper + Brilliant Frame BLE transport + display sink. The :glasses
-    // artifact is new in 0.5.10; bump the publish before this app resolves.
+    // SpriteCore: GlassesProtocol constants (channel bytes, service/char UUIDs)
+    // for the Brilliant Frame BLE wiring. We replaced the rest of the SDK
+    // (transport, client) with local OcGlasses* classes — only the protocol
+    // constants are still consumed.
     implementation("ai.openclaw.spritecore:sprite-core-client:0.5.10")
     implementation("ai.openclaw.spritecore:sprite-core-client-android:0.5.10")
     implementation("ai.openclaw.spritecore:sprite-core-client-compose:0.5.10")

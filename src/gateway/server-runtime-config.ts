@@ -33,6 +33,10 @@ type GatewayRuntimeConfig = {
   openAiChatCompletionsConfig?: import("../config/types.gateway.js").GatewayHttpChatCompletionsConfig;
   openResponsesEnabled: boolean;
   openResponsesConfig?: import("../config/types.gateway.js").GatewayHttpResponsesConfig;
+  assetsHttpEnabled: boolean;
+  assetsHttpConfig?: import("../config/types.gateway.js").GatewayHttpAssetsConfig;
+  streamTtsHttpEnabled: boolean;
+  streamTtsHttpConfig?: import("../config/types.gateway.js").GatewayHttpStreamTtsConfig;
   strictTransportSecurityHeader?: string;
   controlUiBasePath: string;
   controlUiRoot?: string;
@@ -52,6 +56,8 @@ export async function resolveGatewayRuntimeConfig(params: {
   controlUiEnabled?: boolean;
   openAiChatCompletionsEnabled?: boolean;
   openResponsesEnabled?: boolean;
+  assetsHttpEnabled?: boolean;
+  streamTtsHttpEnabled?: boolean;
   auth?: GatewayAuthConfig;
   tailscale?: GatewayTailscaleConfig;
 }): Promise<GatewayRuntimeConfig> {
@@ -96,6 +102,11 @@ export async function resolveGatewayRuntimeConfig(params: {
     params.openAiChatCompletionsEnabled ?? openAiChatCompletionsConfig?.enabled ?? false;
   const openResponsesConfig = params.cfg.gateway?.http?.endpoints?.responses;
   const openResponsesEnabled = params.openResponsesEnabled ?? openResponsesConfig?.enabled ?? false;
+  const assetsHttpConfig = params.cfg.gateway?.http?.endpoints?.assets;
+  const assetsHttpEnabled = params.assetsHttpEnabled ?? assetsHttpConfig?.enabled ?? false;
+  const streamTtsHttpConfig = params.cfg.gateway?.http?.endpoints?.streamTts;
+  const streamTtsHttpEnabled =
+    params.streamTtsHttpEnabled ?? streamTtsHttpConfig?.enabled ?? false;
   const strictTransportSecurityConfig =
     params.cfg.gateway?.http?.securityHeaders?.strictTransportSecurity;
   // HSTS is opt-in and must stay absent for blank strings; local HTTP and reverse-proxy
@@ -189,6 +200,14 @@ export async function resolveGatewayRuntimeConfig(params: {
     openResponsesEnabled,
     openResponsesConfig: openResponsesConfig
       ? { ...openResponsesConfig, enabled: openResponsesEnabled }
+      : undefined,
+    assetsHttpEnabled,
+    assetsHttpConfig: assetsHttpConfig
+      ? { ...assetsHttpConfig, enabled: assetsHttpEnabled }
+      : undefined,
+    streamTtsHttpEnabled,
+    streamTtsHttpConfig: streamTtsHttpConfig
+      ? { ...streamTtsHttpConfig, enabled: streamTtsHttpEnabled }
       : undefined,
     strictTransportSecurityHeader,
     controlUiBasePath,

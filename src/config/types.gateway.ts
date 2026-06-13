@@ -388,11 +388,50 @@ export type GatewayHttpResponsesImagesConfig = {
   timeoutMs?: number;
 };
 
+export type GatewayHttpAssetsConfig = {
+  /**
+   * If true, serve `GET /assets/<path>` from the gateway itself.
+   * Default: false.
+   */
+  enabled?: boolean;
+  /**
+   * Filesystem root for `GET /assets/*`.
+   * If relative, resolved against the gateway's state dir.
+   * Default: "./assets".
+   */
+  assetsDir?: string;
+  /** Skip auth on `/assets/*` (avatars etc). Default: false. */
+  publicAssets?: boolean;
+  /** Max file size in bytes. Default: 10 MB. */
+  maxAssetSizeBytes?: number;
+  /**
+   * Optional base URL advertised to clients via `config.get → dataPlane`.
+   * Example: "https://gateway.tailnet.ts.net".
+   */
+  publicBaseUrl?: string;
+};
+
+export type GatewayHttpStreamTtsConfig = {
+  /**
+   * If true, serve `GET /stream/tts` (and `/tts`) as a streaming proxy.
+   * Default: false.
+   */
+  enabled?: boolean;
+  /** TTS provider id. Only "elevenlabs" is supported at present. */
+  provider?: "elevenlabs";
+  /** API key for the provider. Supports SecretRef. */
+  apiKey?: SecretInput;
+  /** Default provider model id when clients omit `model`. */
+  defaultModel?: string;
+};
+
 export type GatewayHttpEndpointsConfig = {
   /** OpenAI-compatible chat completions endpoint controls. */
   chatCompletions?: GatewayHttpChatCompletionsConfig;
   /** OpenResponses-compatible responses endpoint controls. */
   responses?: GatewayHttpResponsesConfig;
+  assets?: GatewayHttpAssetsConfig;
+  streamTts?: GatewayHttpStreamTtsConfig;
 };
 
 export type GatewayHttpSecurityHeadersConfig = {

@@ -62,11 +62,6 @@ export function isAgentAvatarStatesConfig(
 }
 
 /**
- * Build the instruction text the client should inject as a system message when
- * starting a new session with a state-aware agent. Uses `config.instruction`
- * verbatim if set; otherwise auto-generates from state descriptions.
- */
-/**
  * Narrow a configured `identity.avatar` to its plain string form. A multi-state
  * descriptor has no single avatar source, so it narrows to undefined.
  */
@@ -83,6 +78,11 @@ export function identityWithStringAvatar<
   return { ...identity, avatar: avatarSourceString(identity.avatar) };
 }
 
+/**
+ * Build the instruction text the client should inject as a system message when
+ * starting a new session with a state-aware agent. Uses `config.instruction`
+ * verbatim if set; otherwise auto-generates from state descriptions.
+ */
 export function buildAvatarStateInstruction(cfg: AgentAvatarStatesConfig): string {
   const override = cfg.instruction?.trim();
   if (override) {

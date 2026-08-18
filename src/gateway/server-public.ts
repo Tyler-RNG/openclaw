@@ -50,6 +50,16 @@ export type GatewayServerOptions = {
    * Default: config `gateway.http.endpoints.responses.enabled` (or false when absent).
    */
   openResponsesEnabled?: boolean;
+  /**
+   * If true, serve `GET /assets/<path>` for binary asset delivery.
+   * Default: config `gateway.http.endpoints.assets.enabled` (or false when absent).
+   */
+  assetsHttpEnabled?: boolean;
+  /**
+   * If true, serve `GET /stream/tts` (and `/tts`) as a streaming TTS proxy.
+   * Default: config `gateway.http.endpoints.streamTts.enabled` (or false when absent).
+   */
+  streamTtsHttpEnabled?: boolean;
   /** Override gateway auth configuration (merges with config). */
   auth?: import("../config/config.js").GatewayAuthConfig;
   /** Override gateway Tailscale exposure configuration (merges with config). */

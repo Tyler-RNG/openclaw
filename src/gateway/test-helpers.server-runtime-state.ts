@@ -22,6 +22,8 @@ export async function createGatewayRuntimeStateForTest(
     controlUiBasePath: "/",
     openAiChatCompletionsEnabled: false,
     openResponsesEnabled: false,
+    assetsHttpEnabled: false,
+    streamTtsHttpEnabled: false,
     resolvedAuth: {} as never,
     getResolvedAuth: () => ({}) as never,
     isTerminalEnabled: () => false,

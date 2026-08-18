@@ -103,6 +103,8 @@ const getWorkspaceIconHttpModule = createLazyRuntimeModule(
 const getModelsHttpModule = createLazyRuntimeModule(() => import("./models-http.js"));
 const getOpenAiHttpModule = createLazyRuntimeModule(() => import("./openai-http.js"));
 const getOpenResponsesHttpModule = createLazyRuntimeModule(() => import("./openresponses-http.js"));
+const getAssetsHttpModule = createLazyRuntimeModule(() => import("./assets-http.js"));
+const getTtsHttpModule = createLazyRuntimeModule(() => import("./tts-http.js"));
 const getSessionHistoryHttpModule = createLazyRuntimeModule(
   () => import("./sessions-history-http.js"),
 );
@@ -150,6 +152,14 @@ async function runGatewayHttpRequestStages(
 }
 
 /** Creates the gateway HTTP/HTTPS server and ordered request-stage router. */
+function isAssetsPath(pathname: string): boolean {
+  return pathname === "/assets" || pathname.startsWith("/assets/");
+}
+
+function isStreamTtsPath(pathname: string): boolean {
+  return pathname === "/stream/tts" || pathname === "/tts";
+}
+
 export function createGatewayHttpServer(opts: {
   clients: Set<GatewayWsClient>;
   controlUiEnabled: boolean;
@@ -159,6 +169,10 @@ export function createGatewayHttpServer(opts: {
   openAiChatCompletionsConfig?: import("../config/types.gateway.js").GatewayHttpChatCompletionsConfig;
   openResponsesEnabled: boolean;
   openResponsesConfig?: import("../config/types.gateway.js").GatewayHttpResponsesConfig;
+  assetsHttpEnabled?: boolean;
+  assetsHttpConfig?: import("../config/types.gateway.js").GatewayHttpAssetsConfig;
+  streamTtsHttpEnabled?: boolean;
+  streamTtsHttpConfig?: import("../config/types.gateway.js").GatewayHttpStreamTtsConfig;
   strictTransportSecurityHeader?: string;
   handleHooksRequest: HooksRequestHandler;
   handleMcpOAuthCallbackRequest?: McpOAuthCallbackHandler;
@@ -195,6 +209,10 @@ export function createGatewayHttpServer(opts: {
     openAiChatCompletionsConfig,
     openResponsesEnabled,
     openResponsesConfig,
+    assetsHttpEnabled: assetsHttpEnabledOpt,
+    assetsHttpConfig,
+    streamTtsHttpEnabled: streamTtsHttpEnabledOpt,
+    streamTtsHttpConfig,
     strictTransportSecurityHeader,
     handleHooksRequest,
     handlePluginRequest,
@@ -209,6 +227,8 @@ export function createGatewayHttpServer(opts: {
   const getResolvedAuth = opts.getResolvedAuth ?? (() => resolvedAuth);
   const loadGatewayConfig = opts.getRuntimeConfig ?? getRuntimeConfig;
   const openAiCompatEnabled = openAiChatCompletionsEnabled || openResponsesEnabled;
+  const assetsHttpEnabled = assetsHttpEnabledOpt ?? assetsHttpConfig?.enabled === true;
+  const streamTtsHttpEnabled = streamTtsHttpEnabledOpt ?? streamTtsHttpConfig?.enabled === true;
   const controlUiRouteBasePath =
     controlUiBasePath && controlUiBasePath !== "/" ? controlUiBasePath.replace(/\/$/, "") : "";
   const handleServerRequest = (req: IncomingMessage, res: ServerResponse) => {
@@ -440,6 +460,18 @@ export function createGatewayHttpServer(opts: {
           userProfileAvatarPath ?? scopedRequestPath,
           routeAuth,
         ),
+      );
+      addAdmittedStage(assetsHttpEnabled && isAssetsPath(scopedRequestPath), async () =>
+        (await getAssetsHttpModule()).handleAssetsHttpRequest(req, res, {
+          ...routeAuth,
+          config: { ...(assetsHttpConfig ?? {}), enabled: true },
+        }),
+      );
+      addAdmittedStage(streamTtsHttpEnabled && isStreamTtsPath(scopedRequestPath), async () =>
+        (await getTtsHttpModule()).handleStreamTtsHttpRequest(req, res, {
+          ...routeAuth,
+          config: { ...(streamTtsHttpConfig ?? {}), enabled: true },
+        }),
       );
       addAdmittedStage(openResponsesEnabled && scopedRequestPath === "/v1/responses", async () =>
         (await getOpenResponsesHttpModule()).handleOpenResponsesHttpRequest(req, res, {

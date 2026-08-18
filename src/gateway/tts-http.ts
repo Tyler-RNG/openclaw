@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { loadConfig } from "../config/config.js";
 import type { GatewayHttpStreamTtsConfig } from "../config/types.gateway.js";
-import { resolveSecretInputString } from "../secrets/resolve-secret-input-string.js";
+import { materializeSecretInput } from "../secrets/resolve-secret-input-string.js";
 import {
   authorizeHttpGatewayConnect,
   type ResolvedGatewayAuth,
@@ -89,11 +89,10 @@ async function resolveProviderApiKey(
   if (raw === undefined || raw === null) {
     return undefined;
   }
-  return await resolveSecretInputString({
+  return await materializeSecretInput({
     config: loadConfig(),
     value: raw,
     env: process.env,
-    onResolveRefError: () => undefined as never,
   });
 }
 

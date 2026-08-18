@@ -6,6 +6,7 @@ import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion"
 import { stringify as stringifyYaml } from "yaml";
 import { listAgentEntries, resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { openLocalAgentAvatarFile } from "../agents/identity-avatar-file.js";
+import { avatarSourceString } from "../agents/identity-avatar-states.js";
 import { MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES } from "../agents/workspace-bootstrap-read.js";
 import { normalizeConfiguredMcpServers } from "../config/mcp-config-normalize.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -202,7 +203,7 @@ function readPortableAvatar(params: {
   agent: AgentConfig;
   workspace: string;
 }): { source?: string; sidecar?: { path: string; content: Buffer } } {
-  const source = params.agent.identity?.avatar?.trim();
+  const source = avatarSourceString(params.agent.identity?.avatar)?.trim();
   if (!source) {
     return {};
   }

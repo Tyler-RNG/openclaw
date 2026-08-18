@@ -169,20 +169,34 @@ function escapeHtmlAttribute(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
+// The Control UI avatar route renders a single image, so it never reports the
+// multi-state kind; those collapse to "none" in controlUiAvatarResolutionMeta.
+type ControlUiAvatarStatus = Exclude<AgentAvatarResolution["kind"], "states">;
+
 type ControlUiAvatarMeta = {
   avatarUrl: string | null;
   avatarSource: string | null;
-  avatarStatus: AgentAvatarResolution["kind"] | null;
+  avatarStatus: ControlUiAvatarStatus | null;
   avatarReason: string | null;
 };
 
 function controlUiAvatarResolutionMeta(resolved: AgentAvatarResolution | null): {
   avatarSource: string | null;
-  avatarStatus: AgentAvatarResolution["kind"] | null;
+  avatarStatus: ControlUiAvatarStatus | null;
   avatarReason: string | null;
 } {
   if (!resolved) {
     return { avatarSource: null, avatarStatus: null, avatarReason: null };
+  }
+  // Control UI's avatar route renders a single image. Multi-state avatars have
+  // no single renderable URL here; clients consume them via agents.list →
+  // avatarStates instead, so they degrade to a non-renderable "none".
+  if (resolved.kind === "states") {
+    return {
+      avatarSource: null,
+      avatarStatus: "none",
+      avatarReason: "states-avatar-not-renderable-here",
+    };
   }
   return {
     avatarSource: resolvePublicAgentAvatarSource(resolved) ?? null,

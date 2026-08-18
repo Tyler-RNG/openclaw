@@ -1,3 +1,4 @@
+import { identityWithStringAvatar } from "../../agents/identity-avatar-states.js";
 import { resolveAgentIdentity } from "../../agents/identity.js";
 import { deriveContextPromptTokens, type NormalizedUsage } from "../../agents/usage.js";
 import type { OpenClawConfig } from "../../config/config.js";
@@ -73,7 +74,10 @@ export function buildReplyUsageState(params: {
         })
       : undefined,
     durationMs: params.durationMs,
-    identity: resolveAgentIdentity(params.config, params.agentId),
+    identity: (() => {
+      const resolved = resolveAgentIdentity(params.config, params.agentId);
+      return resolved ? identityWithStringAvatar(resolved) : undefined;
+    })(),
     compactionCount: params.compactionCount,
     contextTokenBudget:
       typeof params.contextTokenBudget === "number" && Number.isFinite(params.contextTokenBudget)

@@ -4,6 +4,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { listAgentEntries } from "../agents/agent-scope-config.js";
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
+import { avatarSourceString } from "../agents/identity-avatar-states.js";
 import { resolveAgentIdentity } from "../agents/identity.js";
 import { loadAgentIdentity } from "../commands/agents.config.js";
 import { tryResolveLegacyCompatibilityAgentId } from "../config/legacy.default-agent-owner.js";
@@ -143,7 +144,7 @@ export function resolveAssistantIdentity(params: {
 
   const uiAvatar = normalizeAvatarValue(configAssistant?.avatar);
   const agentAvatarCandidates = [
-    normalizeAvatarValue(agentIdentity?.avatar),
+    normalizeAvatarValue(avatarSourceString(agentIdentity?.avatar)),
     normalizeAvatarValue(agentIdentity?.emoji),
     normalizeAvatarValue(fileIdentity?.avatar),
     normalizeAvatarValue(fileIdentity?.emoji),
@@ -156,7 +157,7 @@ export function resolveAssistantIdentity(params: {
   const emojiCandidates = [
     normalizeIdentityValue("emoji", agentIdentity?.emoji),
     normalizeIdentityValue("emoji", fileIdentity?.emoji),
-    normalizeIdentityValue("emoji", agentIdentity?.avatar),
+    normalizeIdentityValue("emoji", avatarSourceString(agentIdentity?.avatar)),
     normalizeIdentityValue("emoji", fileIdentity?.avatar),
   ];
   const emoji = emojiCandidates.map((candidate) => normalizeEmojiValue(candidate)).find(Boolean);

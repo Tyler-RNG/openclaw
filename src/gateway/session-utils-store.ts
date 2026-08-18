@@ -15,6 +15,10 @@ import {
   resolveAgentWorkspaceDir,
 } from "../agents/agent-scope.js";
 import { resolveAgentAvatarUrlFromSource } from "../agents/identity-avatar-file.js";
+import {
+  buildAvatarStateInstruction,
+  isAgentAvatarStatesConfig,
+} from "../agents/identity-avatar-states.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import { splitTrailingAuthProfile } from "../agents/model-ref-profile.js";
 import { resolveDefaultModelForAgent } from "../agents/model-selection.js";
@@ -322,7 +326,11 @@ export function listAgentsForGateway(
       continue;
     }
     const agentId = normalizeAgentId(entry.id);
-    const avatar = normalizeOptionalString(entry.identity?.avatar);
+    const avatarRaw = entry.identity?.avatar;
+    const avatarStatesCfg = isAgentAvatarStatesConfig(avatarRaw) ? avatarRaw : null;
+    // A multi-state descriptor has no single avatar source string; only plain
+    // string avatars produce `avatar`/`avatarUrl`.
+    const avatar = typeof avatarRaw === "string" ? normalizeOptionalString(avatarRaw) : undefined;
     const avatarUrl = resolveAgentAvatarUrlFromSource(cfg, agentId, avatar);
     const identity = entry.identity
       ? {
@@ -331,6 +339,15 @@ export function listAgentsForGateway(
           emoji: normalizeOptionalString(entry.identity.emoji),
           avatar,
           avatarUrl,
+          ...(avatarStatesCfg
+            ? {
+                avatarStates: {
+                  default: avatarStatesCfg.default,
+                  states: avatarStatesCfg.states,
+                  instruction: buildAvatarStateInstruction(avatarStatesCfg),
+                },
+              }
+            : {}),
         }
       : undefined;
     configuredById.set(agentId, { identity });

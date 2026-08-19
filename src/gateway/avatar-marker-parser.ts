@@ -1,17 +1,28 @@
 /**
  * Streaming parser for avatar-state markers embedded in assistant text.
  *
- * A marker is the literal text `[avatar:<state>]` on its own line — nothing
- * else on that line (leading/trailing whitespace OK). Matching markers are
- * stripped from the visible text and surfaced separately. Markers inline with
- * other text on the same line are treated as literal text, not markers.
+ * Two marker syntaxes are recognized, both only when alone on their own line
+ * (leading/trailing whitespace OK); inline occurrences stay literal text:
+ *
+ * - `[avatar:<state>]` — the gateway-native form, used by `identity.avatar`
+ *   multi-state configs.
+ * - `<<<state>>>` / `<<<state-N>>>` — the SpriteCore form. The sprite-core
+ *   plugin teaches this vocabulary to the model, and the SpriteCore client
+ *   SDKs emit it, so the gateway must strip it too or the raw marker reaches
+ *   chat transcripts and TTS. `N` is an optional play count.
+ *
+ * Matching markers are stripped from the visible text and surfaced separately.
  *
  * The parser is stateful across chunks: a marker split mid-token across two
  * chunks is still recognized. Non-marker content is emitted immediately when
  * possible so streaming UX isn't delayed.
  */
 
-export type AvatarMarker = { state: string };
+export type AvatarMarker = {
+  state: string;
+  /** Play count from `<<<state-N>>>`; undefined means loop (the default). */
+  count?: number;
+};
 
 export type AvatarMarkerParseResult = {
   cleanedText: string;
@@ -25,10 +36,28 @@ export type AvatarMarkerParser = {
 };
 
 const MARKER_LINE_RE = /^[ \t]*\[avatar:([a-zA-Z0-9_-]+)\][ \t]*$/;
+const SPRITE_MARKER_LINE_RE =
+  /^[ \t]*<<<([a-zA-Z0-9_]+(?:-[a-zA-Z0-9_]+)*?)(?:-(\d+))?>>>[ \t]*$/;
+
+/** Matches either marker syntax, or null when the line is ordinary text. */
+function matchMarkerLine(line: string): AvatarMarker | null {
+  const native = MARKER_LINE_RE.exec(line);
+  if (native) {
+    return { state: native[1]! };
+  }
+  const sprite = SPRITE_MARKER_LINE_RE.exec(line);
+  if (sprite) {
+    const rawCount = sprite[2];
+    return rawCount === undefined
+      ? { state: sprite[1]! }
+      : { state: sprite[1]!, count: Number(rawCount) };
+  }
+  return null;
+}
 
 /**
- * A line tail could become a marker if it starts with `[` (optionally
- * preceded by spaces/tabs). Anything else is guaranteed never to match the
+ * A line tail could become a marker if it starts with `[` or `<` (optionally
+ * preceded by spaces/tabs). Anything else is guaranteed never to match either
  * marker regex and can be emitted immediately.
  */
 function tailCouldBeMarker(tail: string): boolean {
@@ -37,10 +66,10 @@ function tailCouldBeMarker(tail: string): boolean {
     i++;
   }
   if (i === tail.length) {
-    // whitespace-only tail: could still become `<ws>[avatar:...]`
+    // whitespace-only tail: could still become `<ws>[avatar:...]` or `<ws><<<state>>>`
     return true;
   }
-  return tail[i] === "[";
+  return tail[i] === "[" || tail[i] === "<";
 }
 
 export function createAvatarMarkerParser(): AvatarMarkerParser {
@@ -59,9 +88,9 @@ export function createAvatarMarkerParser(): AvatarMarkerParser {
     const outParts: string[] = [];
     const markers: AvatarMarker[] = [];
     for (const line of lines) {
-      const match = MARKER_LINE_RE.exec(line);
-      if (match) {
-        markers.push({ state: match[1]! });
+      const marker = matchMarkerLine(line);
+      if (marker) {
+        markers.push(marker);
         continue;
       }
       outParts.push(line);
@@ -95,10 +124,10 @@ export function createAvatarMarkerParser(): AvatarMarkerParser {
       if (buffer.length === 0) {
         return { cleanedText: "", markers: [] };
       }
-      const match = MARKER_LINE_RE.exec(buffer);
-      if (match) {
+      const marker = matchMarkerLine(buffer);
+      if (marker) {
         buffer = "";
-        return { cleanedText: "", markers: [{ state: match[1]! }] };
+        return { cleanedText: "", markers: [marker] };
       }
       const leftover = buffer;
       buffer = "";

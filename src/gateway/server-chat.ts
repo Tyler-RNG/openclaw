@@ -1420,6 +1420,7 @@ export function createAgentEventHandler({
           agentId: ev.agentId,
           state: ev.state,
           file: ev.file,
+          ...(ev.count === undefined ? {} : { count: ev.count }),
           ts: Date.now(),
         });
       }

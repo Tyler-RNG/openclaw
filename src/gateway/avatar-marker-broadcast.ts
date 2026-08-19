@@ -9,7 +9,8 @@ import { parseAvatarMarkers, type AvatarMarker } from "./avatar-marker-parser.js
  *
  * Two signal sources converge on one `avatar.state.change` event shape:
  *
- * 1. **Model-driven** — `[avatar:<state>]` markers emitted in assistant text.
+ * 1. **Model-driven** — `[avatar:<state>]` or `<<<state>>>` markers emitted in
+ *    assistant text (the latter is what the sprite-core plugin teaches).
  *    Only the model knows tone (happy/sad/angry/curious/…); client must have
  *    been briefed via the `instruction` injection so the model speaks the
  *    protocol. We strip matching markers from visible text and surface them.
@@ -37,6 +38,11 @@ export type AvatarMarkerBroadcastEvent = {
   state: string;
   /** File reference from the config (free-form string: path / URL / etc). */
   file: string;
+  /**
+   * Play count carried by a `<<<state-N>>>` SpriteCore marker. Undefined means
+   * loop, which is also what `[avatar:<state>]` always means.
+   */
+  count?: number;
 };
 
 export type AvatarMarkerBroadcastResult = {
@@ -127,6 +133,7 @@ export function createAvatarMarkerBroadcast(params: {
         agentId,
         state: marker.state,
         file: entry.file,
+        ...(marker.count === undefined ? {} : { count: marker.count }),
       });
       runState.lastEmittedState = marker.state;
     }

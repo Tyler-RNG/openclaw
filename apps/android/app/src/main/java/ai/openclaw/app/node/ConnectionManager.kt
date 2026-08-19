@@ -55,6 +55,15 @@ class ConnectionManager internal constructor(
     internal const val AGENT_KIND_CLIENT_CAPABILITY = "agent-kind"
     internal const val INLINE_WIDGETS_CLIENT_CAPABILITY = "inline-widgets"
 
+    /**
+     * Tells the gateway this operator can render animated sprite avatars.
+     * The SpriteCore plugin keys both the `<<<state>>>` prompt-vocabulary
+     * injection and the character-manifest mode filter on this, so dashboards
+     * and headless sessions never see marker vocabulary. Headshot rather than
+     * fullbody: the phone renders agent avatars in small circular slots.
+     */
+    internal const val SPRITE_HEADSHOT_CLIENT_CAPABILITY = "display:sprite-headshot"
+
     internal fun operatorScopesForStoredDeviceToken(storedScopes: List<String>): List<String> {
       val normalized =
         storedScopes
@@ -232,6 +241,7 @@ class ConnectionManager internal constructor(
       caps =
         buildList {
           add(AGENT_KIND_CLIENT_CAPABILITY)
+          add(SPRITE_HEADSHOT_CLIENT_CAPABILITY)
           if (inlineWidgetsAvailable()) add(INLINE_WIDGETS_CLIENT_CAPABILITY)
         },
       commands = emptyList(),

@@ -59,7 +59,7 @@ import ai.openclaw.app.ui.design.ClawStatus
 import ai.openclaw.app.ui.design.ClawStatusPill
 import ai.openclaw.app.ui.design.ClawTheme
 import ai.openclaw.app.ui.design.OpenClawMascot
-import ai.openclaw.app.ui.design.agentAvatarSource
+import ai.openclaw.app.ui.design.rememberAgentAvatarSource
 import ai.openclaw.app.ui.gatewayDiagnosticsEndpoint
 import ai.openclaw.app.ui.gatewayStatusForDisplay
 import ai.openclaw.app.ui.localizedUppercase
@@ -990,7 +990,7 @@ private fun ChatAgentSelector(
     selectableAgents.forEach { agent ->
       ChatSessionChip(
         text = chatAgentChipText(agent),
-        avatarSource = agentAvatarSource(agent),
+        avatarSource = rememberAgentAvatarSource(agent),
         active = agent.id == activeAgentId,
         onClick = { onSelectAgent(agent.id) },
       )

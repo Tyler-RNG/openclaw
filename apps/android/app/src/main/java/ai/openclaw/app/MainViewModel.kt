@@ -53,12 +53,14 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
+import ai.openclaw.app.sprite.SpriteAvatarStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
@@ -310,6 +312,16 @@ class MainViewModel private constructor(
 
   private val nodeApp = app as NodeApp
   private val runtimeRef = MutableStateFlow<NodeRuntime?>(null)
+  /**
+   * SpriteCore avatar source, available once the runtime attaches. Null before
+   * that and whenever the gateway plugin is absent, so avatar surfaces fall
+   * back to the static renderer.
+   */
+  val spriteAvatarStore: StateFlow<SpriteAvatarStore?> =
+    runtimeRef
+      .map { it?.spriteAvatarStore }
+      .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
   private val gatewayConfigOperationSeq = AtomicLong()
   private val gatewayConfigOperationMutex = Mutex()
 

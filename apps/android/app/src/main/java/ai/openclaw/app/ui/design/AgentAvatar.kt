@@ -1,6 +1,7 @@
 package ai.openclaw.app.ui.design
 
 import ai.openclaw.app.GatewayAgentSummary
+import ai.openclaw.app.sprite.SpriteAvatarStore
 import ai.openclaw.app.ui.image.RemoteImageResult
 import ai.openclaw.app.ui.image.decodeRemoteImageBitmap
 import ai.openclaw.app.ui.image.safeRemoteImageStore
@@ -12,6 +13,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,6 +53,48 @@ internal sealed interface AgentAvatarSource {
   data class Remote(
     val url: String,
   ) : AgentAvatarSource
+
+  /**
+   * Animated multi-state avatar served by the SpriteCore gateway plugin.
+   * Takes precedence over the static forms when a complete bundle has loaded;
+   * see [rememberAgentAvatarSource].
+   */
+  data class Sprite(
+    val agentId: String,
+    val bundle: SpriteAvatarStore.Bundle,
+    val currentState: String?,
+  ) : AgentAvatarSource
+}
+
+/**
+ * Sprite avatar source for the current screen, or null where SpriteCore is
+ * unavailable (no gateway runtime, plugin not installed, previews).
+ * Provided once near the app root; see [rememberAgentAvatarSource].
+ */
+internal val LocalSpriteAvatarStore = staticCompositionLocalOf<SpriteAvatarStore?> { null }
+
+/**
+ * Resolves the avatar to render for [agent], preferring an animated SpriteCore
+ * avatar when a complete bundle has loaded and falling back to the static
+ * source otherwise. Inert when no store is provided, so previews and any
+ * surface outside the runtime tree keep the plain static behaviour.
+ */
+@Composable
+internal fun rememberAgentAvatarSource(agent: GatewayAgentSummary): AgentAvatarSource? {
+  val spriteStore = LocalSpriteAvatarStore.current ?: return agentAvatarSource(agent)
+  LaunchedEffect(spriteStore, agent.id) { spriteStore.ensureLoaded(agent.id) }
+  val bundles by spriteStore.bundles.collectAsState()
+  val states by spriteStore.states.collectAsState()
+  val bundle = bundles[agent.id]
+  return if (bundle != null) {
+    AgentAvatarSource.Sprite(
+      agentId = agent.id,
+      bundle = bundle,
+      currentState = states[agent.id],
+    )
+  } else {
+    agentAvatarSource(agent)
+  }
 }
 
 /** Returns the authoritative Android-renderable agent avatar source, if present. */
@@ -86,6 +131,15 @@ internal fun ClawAgentAvatar(
         RasterDataAgentAvatar(source = source, size = size, shape = shape, fallback = fallback)
       }
     is AgentAvatarSource.Remote -> RemoteAgentAvatar(source.url, size, shape, fallback)
+    is AgentAvatarSource.Sprite ->
+      SpriteAgentAvatar(
+        agentId = source.agentId,
+        bundle = source.bundle,
+        currentState = source.currentState,
+        size = size,
+        shape = shape,
+        contentDescription = null,
+      )
     null -> fallback()
   }
 }

@@ -93,6 +93,7 @@ import ai.openclaw.app.node.SmsManager
 import ai.openclaw.app.node.SystemHandler
 import ai.openclaw.app.node.TalkHandler
 import ai.openclaw.app.node.asObjectOrNull
+import ai.openclaw.app.sprite.SpriteAvatarStore
 import ai.openclaw.app.node.asStringOrNull
 import ai.openclaw.app.node.invokeErrorFromThrowable
 import ai.openclaw.app.node.parseHexColorArgb
@@ -176,6 +177,10 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+
+// Emitted by the gateway after `[avatar:<state>]` markers are stripped from
+// assistant text; drives the SpriteCore avatar's current animation state.
+private const val AVATAR_STATE_CHANGE_EVENT = "avatar.state.change"
 
 private const val MAX_PENDING_NOTIFICATION_EVENTS = 128
 private const val NODE_APPROVAL_COMMAND_FRESH_MS = 30_000L
@@ -1503,6 +1508,29 @@ class NodeRuntime private constructor(
         handleGatewayEvent(event, payloadJson)
       },
       customHeadersProvider = prefs::loadGatewayCustomHeaders,
+    )
+
+  /**
+   * Animated multi-state avatars served by the SpriteCore gateway plugin.
+   * Fetches through the operator session, so it is inert until that connects
+   * and stays empty when the plugin is not installed.
+   */
+  val spriteAvatarStore =
+    SpriteAvatarStore(
+      request = { method, paramsJson ->
+        if (!operatorConnected) {
+          null
+        } else {
+          runCatching { operatorSession.request(method, paramsJson) }.getOrNull()
+        }
+      },
+      authToken = {
+        runCatching {
+          operatorSession.currentEndpointStableId()?.let { stableId ->
+            prefs.loadGatewayCredentials(stableId).token
+          }
+        }.getOrNull()
+      },
     )
 
   private val sessionObserverVisibility =
@@ -5417,6 +5445,23 @@ class NodeRuntime private constructor(
         .getOrNull()
         ?.let { wearProxyBridge()?.publishChat(it) }
     }
+    if (event == AVATAR_STATE_CHANGE_EVENT) {
+      handleAvatarStateChange(payloadJson)
+    }
+  }
+
+  /**
+   * Applies an `avatar.state.change` event to the sprite avatar store. The
+   * gateway emits these after stripping `[avatar:<state>]` markers out of
+   * assistant text, so the phone never has to parse reply bodies itself.
+   */
+  private fun handleAvatarStateChange(payloadJson: String?) {
+    if (payloadJson.isNullOrBlank()) return
+    val obj = runCatching { json.parseToJsonElement(payloadJson) }.getOrNull()?.asObjectOrNull() ?: return
+    val agentId = obj["agentId"].asStringOrNull()?.trim().orEmpty()
+    val state = obj["state"].asStringOrNull()?.trim().orEmpty()
+    if (agentId.isEmpty() || state.isEmpty()) return
+    spriteAvatarStore.onAvatarStateChange(agentId, state)
   }
 
   private fun handleNodeGatewayEvent(

@@ -438,6 +438,12 @@ dependencies {
   implementation(libs.media3.ui)
   implementation(libs.bcprov)
   implementation(libs.coil.compose)
+  // SpriteCore Kotlin SDK — multi-state animated avatars. The `compose` module
+  // owns playback and frame decoding, so the app only supplies the manifest,
+  // asset bytes, and current state. Version tracks apps/wearable.
+  implementation("ai.openclaw.spritecore:sprite-core-client:0.5.10")
+  implementation("ai.openclaw.spritecore:sprite-core-client-android:0.5.10")
+  implementation("ai.openclaw.spritecore:sprite-core-client-compose:0.5.10")
   implementation(libs.coil.svg)
   implementation(libs.commonmark)
   implementation(libs.commonmark.ext.autolink)

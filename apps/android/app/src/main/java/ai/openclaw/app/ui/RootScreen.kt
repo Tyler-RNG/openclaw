@@ -1,6 +1,8 @@
 package ai.openclaw.app.ui
 
 import ai.openclaw.app.MainViewModel
+import ai.openclaw.app.ui.design.LocalSpriteAvatarStore
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -17,5 +19,10 @@ fun RootScreen(viewModel: MainViewModel) {
     return
   }
 
-  ShellScreen(viewModel = viewModel, modifier = Modifier.fillMaxSize())
+  // Published once here so agent avatar surfaces anywhere in the shell can
+  // render animated SpriteCore avatars without threading the store through.
+  val spriteAvatarStore by viewModel.spriteAvatarStore.collectAsState()
+  CompositionLocalProvider(LocalSpriteAvatarStore provides spriteAvatarStore) {
+    ShellScreen(viewModel = viewModel, modifier = Modifier.fillMaxSize())
+  }
 }

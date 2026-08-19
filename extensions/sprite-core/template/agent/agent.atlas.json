@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "agent": "agent",
+  "image": "agent.atlas.webp",
+  "size": { "w": 512, "h": 512 },
+  "frameSize": { "w": 256, "h": 256 },
+  "frames": {
+    "idle/00": { "x": 0, "y": 0, "w": 256, "h": 256 },
+    "thinking/00": { "x": 256, "y": 0, "w": 256, "h": 256 },
+    "happy/00": { "x": 0, "y": 256, "w": 256, "h": 256 },
+    "sad/00": { "x": 256, "y": 256, "w": 256, "h": 256 }
+  },
+  "animations": {
+    "idle": { "frames": ["idle/00"], "fps": 1, "loop": "infinite" },
+    "thinking": { "frames": ["thinking/00"], "fps": 1, "loop": "infinite" },
+    "happy": { "frames": ["happy/00"], "fps": 1, "loop": "infinite" },
+    "sad": { "frames": ["sad/00"], "fps": 1, "loop": "infinite" }
+  }
+}

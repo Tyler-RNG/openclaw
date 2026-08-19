@@ -1,0 +1,78 @@
+{
+  "id": "sprite-core",
+  "enabledByDefault": false,
+  "description": "In-gateway data plane for multi-state sprite/atlas avatars: asset serving and TTS streaming.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "assets": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "assetsDir": { "type": "string" },
+          "publicAssets": { "type": "boolean" },
+          "maxAssetSizeBytes": { "type": "number" },
+          "publicBaseUrl": { "type": "string" }
+        }
+      },
+      "streamTts": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "provider": { "type": "string", "enum": ["elevenlabs"] },
+          "apiKey": {},
+          "defaultModel": { "type": "string" }
+        }
+      },
+      "agents": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "avatar": {},
+            "voice": {},
+            "prompting": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "descriptions": {
+                  "type": "object",
+                  "additionalProperties": { "type": "string" }
+                },
+                "instruction": { "type": "string" }
+              }
+            },
+            "emotions": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["description"],
+                "properties": {
+                  "description": { "type": "string" },
+                  "directive": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "voiceId": { "type": "string" },
+                      "stability": { "type": "number", "minimum": 0, "maximum": 1 },
+                      "similarity": { "type": "number", "minimum": 0, "maximum": 1 },
+                      "style": { "type": "number", "minimum": 0, "maximum": 1 },
+                      "speakerBoost": { "type": "boolean" },
+                      "speed": { "type": "number", "minimum": 0.25, "maximum": 4 },
+                      "audioTag": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

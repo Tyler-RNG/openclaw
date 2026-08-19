@@ -1714,6 +1714,8 @@
                       "gateway/clients",
                       "gateway/embedding",
                       "gateway/bridge-protocol",
+                      "gateway/avatar-states",
+                      "gateway/avatar-states-integration",
                       "gateway/openai-http-api",
                       "gateway/openresponses-http-api",
                       "gateway/tools-invoke-http-api",

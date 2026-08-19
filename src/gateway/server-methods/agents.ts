@@ -862,7 +862,14 @@ async function buildIdentityMarkdownForWrite(params: {
     }
   }
 
-  return mergeIdentityMarkdownContent(baseContent, params.identity);
+  // The legacy identity markdown file only carries a string avatar. Drop the
+  // multi-state object (if present) when persisting to the file — it lives in
+  // openclaw.json, not the per-workspace identity markdown.
+  const identityForFile = {
+    ...params.identity,
+    avatar: typeof params.identity.avatar === "string" ? params.identity.avatar : undefined,
+  };
+  return mergeIdentityMarkdownContent(baseContent, identityForFile);
 }
 
 async function buildIdentityMarkdownOrRespondUnsafe(params: {

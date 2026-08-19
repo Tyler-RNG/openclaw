@@ -27,6 +27,7 @@ import { claimCompletedAgentDeletion } from "./agent-lifecycle-registry.js";
 import { toAgentEntriesRecord } from "./agent-scope-config.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "./agent-scope.js";
 import { resolveSharedAuthStoreOwnership } from "./auth-profiles/path-resolve.js";
+import { identityWithStringAvatar } from "./identity-avatar-states.js";
 import {
   createAgentIdentityConfig,
   mergeIdentityMarkdownContent,
@@ -216,7 +217,8 @@ async function writeIdentityFile(params: {
       throw error;
     }
   }
-  const content = mergeIdentityMarkdownContent(existing, params.identity);
+  // IDENTITY.md carries only a string avatar; multi-state descriptors live in config.
+  const content = mergeIdentityMarkdownContent(existing, identityWithStringAvatar(params.identity));
   await workspaceRoot.write(DEFAULT_IDENTITY_FILENAME, content, { encoding: "utf8" });
 }
 

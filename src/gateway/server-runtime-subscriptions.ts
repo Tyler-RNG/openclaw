@@ -132,8 +132,18 @@ export function startGatewayEventSubscriptions(params: {
   const agentEventHandlerLoader = createLazyPromiseLoader(
     () => {
       // Lazy-load heavy chat modules only after the first agent event reaches the gateway.
-      return Promise.all([import("./server-chat.js"), import("./server-session-key.js")]).then(
-        ([{ createAgentEventHandler }, { resolveSessionKeyForRun }]) =>
+      return Promise.all([
+        import("./server-chat.js"),
+        import("./server-session-key.js"),
+        import("./avatar-marker-broadcast.js"),
+        import("../config/config.js"),
+      ]).then(
+        ([
+          { createAgentEventHandler },
+          { resolveSessionKeyForRun },
+          { createAvatarMarkerBroadcast },
+          { loadConfig },
+        ]) =>
           createAgentEventHandler({
             broadcast: params.broadcast,
             broadcastToConnIds: params.broadcastToConnIds,
@@ -249,6 +259,11 @@ export function startGatewayEventSubscriptions(params: {
               const entry = params.chatAbortControllers.get(runId);
               return entry !== undefined && entry.kind !== "agent";
             },
+            // Live [avatar:<state>] marker broadcast. No-op unless the speaking
+            // agent is configured with a multi-state avatar.
+            avatarMarkerBroadcast: createAvatarMarkerBroadcast({
+              getConfig: () => loadConfig(),
+            }),
             resolveActiveLifecycleGenerationForRun: (runId) =>
               params.chatAbortControllers.get(runId)?.lifecycleGeneration,
             resolveSessionActiveRunState: (session) =>

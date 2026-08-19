@@ -54,7 +54,14 @@ const IDENTITY_CONFIG_FIELDS = ["name", "theme", "emoji", "avatar"] as const;
 function compactIdentityConfig(identity: IdentityConfig): IdentityConfig | undefined {
   const resolved: IdentityConfig = {};
   for (const field of IDENTITY_CONFIG_FIELDS) {
-    const value = identity[field]?.trim();
+    const raw = identity[field];
+    // `avatar` may be a multi-state object rather than a string; it carries no
+    // whitespace to trim and is preserved as-is.
+    if (raw !== undefined && typeof raw !== "string") {
+      resolved.avatar = raw;
+      continue;
+    }
+    const value = raw?.trim();
     if (value) {
       resolved[field] = value;
     }

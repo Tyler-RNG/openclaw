@@ -12,6 +12,7 @@ import {
   toAgentEntriesRecord,
 } from "../agents/agent-scope.js";
 import { resolveAgentAvatarUrlFromSource } from "../agents/identity-avatar-file.js";
+import { avatarSourceString } from "../agents/identity-avatar-states.js";
 import type { AgentIdentityFile } from "../agents/identity-file.js";
 import { identityHasValues, loadAgentIdentityFromWorkspace } from "../agents/identity-file.js";
 import { pinLegacyInheritedAuthOwnerForRosterTransition } from "../agents/legacy-inherited-auth-dir.js";
@@ -101,7 +102,7 @@ export function buildAgentSummaries(cfg: OpenClawConfig): AgentSummary[] {
     const identityAvatarUrl = resolveAgentAvatarUrlFromSource(
       cfg,
       id,
-      identity?.avatar ?? configIdentity?.avatar,
+      identity?.avatar ?? avatarSourceString(configIdentity?.avatar),
     );
     const identitySource = identity
       ? "identity"

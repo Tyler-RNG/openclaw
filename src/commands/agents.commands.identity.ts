@@ -8,6 +8,7 @@ import {
   resolveAgentWorkspaceDir,
   resolveDefaultAgentId,
 } from "../agents/agent-scope.js";
+import { avatarSourceString } from "../agents/identity-avatar-states.js";
 import { loadAgentIdentityFromFile } from "../agents/identity-file.js";
 import { DEFAULT_IDENTITY_FILENAME } from "../agents/workspace.js";
 import { replaceConfigFile } from "../config/config.js";
@@ -241,8 +242,9 @@ export async function agentsSetIdentityCommand(
   if (nextIdentity.emoji) {
     runtime.log(`Emoji: ${sanitizeTerminalText(nextIdentity.emoji)}`);
   }
-  if (nextIdentity.avatar) {
-    runtime.log(`Avatar: ${sanitizeTerminalText(nextIdentity.avatar)}`);
+  const nextAvatarSource = avatarSourceString(nextIdentity.avatar);
+  if (nextAvatarSource) {
+    runtime.log(`Avatar: ${sanitizeTerminalText(nextAvatarSource)}`);
   }
   if (workspaceDir) {
     runtime.log(`Workspace: ${sanitizeTerminalText(shortenHomePath(workspaceDir))}`);

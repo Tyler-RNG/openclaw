@@ -320,7 +320,19 @@ export const CORE_FIELD_HELP: Record<string, string> = {
   "agents.entries.*.runtime.acp.cwd":
     "Optional default working directory for this agent's ACP sessions.",
   "agents.entries.*.identity.avatar":
-    "Avatar image path (relative to the agent workspace only) or a remote URL/data URL.",
+    "Avatar: either a string (workspace-relative path, http(s) URL, data URI, emoji/short text) or a multi-state object `{ kind: \"states\", default, states: { <name>: { file, description } }, instruction? }`. Multi-state lets the model switch expressions mid-reply via `[avatar:<state>]` markers. See docs/gateway/avatar-states.md.",
+  "agents.entries.*.identity.avatar.kind":
+    "Discriminator for multi-state avatars. Must be the literal string \"states\".",
+  "agents.entries.*.identity.avatar.default":
+    "Name of the default state rendered when no marker has been emitted yet. Must match a key in `states`.",
+  "agents.entries.*.identity.avatar.states":
+    "Map from state name (e.g. happy, sad, angry) to `{ file, description }`. State names must match [a-zA-Z0-9_-]+.",
+  "agents.entries.*.identity.avatar.states.*.file":
+    "File reference for this state. Free-form string — the client resolves it (typical forms: workspace-relative path, /assets/... URL, http(s) URL).",
+  "agents.entries.*.identity.avatar.states.*.description":
+    "Short description of when the state applies. Surfaced to the model in auto-generated instructions to help it pick the right state.",
+  "agents.entries.*.identity.avatar.instruction":
+    "Optional override for the instruction text clients inject on new sessions. When unset, the text is auto-built from the state descriptions.",
   "agents.defaults.heartbeat.timeoutSeconds":
     "Maximum time in seconds allowed for a heartbeat agent turn before it is aborted. Leave unset to use agents.defaults.timeoutSeconds when set, otherwise the heartbeat cadence capped at 600 seconds.",
   "agents.defaults.heartbeat.agentId":
